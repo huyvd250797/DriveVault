@@ -17,6 +17,8 @@ export interface VaultItem {
   archived: boolean;
   deleted: boolean;
   deletedAt: string;
+  thumbnail: string;
+  protected: boolean;
   syncState?: SyncState;
 }
 
@@ -31,6 +33,8 @@ export interface CreateVaultItem {
   archived?: boolean;
   deleted?: boolean;
   deletedAt?: string;
+  thumbnail?: string;
+  protected?: boolean;
 }
 
 export interface BackupSnapshot {

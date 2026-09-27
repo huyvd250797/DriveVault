@@ -1,130 +1,117 @@
-# DriveVault Mobile V1.6.0 – Media & Link Intelligence
+# DriveVault Mobile V1.7.0 – Security & App Lock + Media Pro
 
-V1.6.0 nâng cấp trải nghiệm media/link và tinh gọn dashboard mobile. Bản này kế thừa toàn bộ Backup & Data Portability V1.5.0, Search & Organization Pro V1.4.0 và Offline Queue/Sync State của V1.3.0.
+V1.7.0 kế thừa toàn bộ V1.6.0 và tập trung vào 2 nhóm: **bảo mật truy cập trên thiết bị** và **xem/chọn media trực tiếp trong app**.
 
-## Tính năng mới V1.6.0
+## Tính năng mới V1.7.0
 
-### 1. Dashboard gọn hơn
-Ngoài dashboard chỉ giữ các điều khiển chính:
-- Ô tìm kiếm.
-- Nút **Bộ lọc**.
-- Bộ lọc **Loại lưu trữ**: Tất cả / Ảnh & Video / Nội dung / Khác.
+### 1. Security & App Lock
+- Tạo PIN từ 4–8 chữ số.
+- PIN không lưu dạng plain text; app lưu hash PBKDF2 + salt trong `localStorage` của thiết bị.
+- Auto-lock sau 1 / 5 / 15 / 30 / 60 phút không thao tác.
+- Nút **Khóa ngay**.
+- Đổi PIN / tắt App Lock bằng PIN hiện tại.
+- Khi app đang khóa, toàn bộ dashboard bị che bởi màn hình mở khóa.
 
-Các nội dung trước đây chiếm nhiều diện tích được chuyển vào Bottom Sheet Bộ lọc:
-- Trạng thái thư viện: Tất cả / Đã ghim / Gần đây / Dùng nhiều / Lưu trữ / Thùng rác.
-- Sắp xếp.
-- Chọn nhiều.
-- Phân loại.
-- Tag.
-- Phạm vi tìm kiếm nâng cao.
-- Từ ngày / Đến ngày.
-- Có link / Không có link.
+> App Lock là lớp khóa giao diện phía client, không phải mã hóa end-to-end database Google Sheet. PIN chỉ áp dụng trên thiết bị/trình duyệt hiện tại.
 
-Nút bộ lọc có badge hiển thị số điều kiện đang được áp dụng.
+### 2. Protected Item
+- Khi App Lock đã bật, lúc thêm/sửa có thể chọn **Bảo vệ mục này**.
+- Block bảo vệ không hiển thị detail, link và thumbnail thật ở dashboard.
+- Muốn mở block phải nhập lại PIN.
+- Trường `protected` được đồng bộ vào Google Sheet để giữ trạng thái block.
 
-### 2. Ẩn ngày lưu khỏi card
-`createdAt` vẫn được lưu đầy đủ trong database, backup và màn hình chi tiết, nhưng **không còn hiển thị ngoài dashboard** để tránh bị hiểu nhầm thành ngày diễn ra hoạt động/nội dung của block.
+### 3. Xem video trong app
+Với media Google Drive app dùng chuỗi fallback:
+1. Player HTML5 qua route `/api/media` cùng domain để hiển thị **hình + tiếng**.
+2. Nếu stream trực tiếp không khả dụng, thử hiển thị file như ảnh.
+3. Cuối cùng fallback về Google Drive Preview iframe.
 
-### 3. Phân loại độc lập
-V1.6 dùng trường `collection` cũ làm giá trị phân loại trên item để giữ tương thích dữ liệu, nhưng bổ sung sheet riêng:
+Player có:
+- Play/Pause, timeline, âm lượng bằng native controls.
+- `playsInline` trên mobile.
+- Nút **Fullscreen** riêng của DriveVault.
+- Native fullscreen của browser/video vẫn dùng được.
 
-```text
-Classifications
-name | createdAt
-```
+### 4. Xem ảnh trong app
+- Link ảnh trực tiếp hiển thị bằng image viewer trong Bottom Sheet.
+- Google Drive image được thử đọc trực tiếp qua `/api/media`, sau đó fallback Google Drive Preview khi cần.
+- Có nút fullscreen.
 
-Có thể:
-- Tạo trước phân loại mới, ví dụ `Shopee`.
-- Lọc dashboard theo phân loại.
-- Chọn phân loại khi thêm/sửa item.
-- Chọn nhiều item và chuyển hàng loạt sang một phân loại.
-- Các collection cũ của V1.5 tự được nhận diện như phân loại hiện có, không mất dữ liệu.
+### 5. Chọn thumbnail từ video Drive
+Khi thêm/sửa mục **Ảnh / Video**:
+- Dán link Google Drive file.
+- Player thumbnail picker xuất hiện.
+- Kéo thanh timeline đến khung hình mong muốn.
+- Bấm **Dùng khung hình này**.
+- App chụp frame, resize/compress và lưu thumbnail dưới dạng JPEG data URL nhỏ trong Google Sheet.
+- Thumbnail đã chọn được dùng ngay ở block dashboard.
+- Có thể bấm **Dùng tự động** để quay lại thumbnail mặc định Drive.
 
-### 4. Click logo/tên app để làm mới
-Bấm logo hoặc tên **DriveVault / Kho dùng nhanh** sẽ:
-- Xóa nội dung tìm kiếm.
-- Đưa loại lưu trữ về `Tất cả`.
-- Xóa Tag/Phân loại đang lọc.
-- Đưa trạng thái thư viện về `Tất cả`.
-- Đưa Sort về `Sắp xếp thông minh`.
-- Xóa điều kiện ngày/link/tìm kiếm nâng cao.
-- Thoát chế độ chọn nhiều.
-- Scroll lên đầu trang.
-- Đồng bộ queue và tải lại dữ liệu mới từ Google Sheet.
+Để kéo chọn frame từ video Drive, file cần cho phép server DriveVault đọc qua link, khuyến nghị quyền chia sẻ **Bất kỳ ai có liên kết**. File private vẫn có thể fallback sang Drive Preview trong trình duyệt, nhưng custom frame picker có thể không đọc được.
 
-### 5. Media & Link Intelligence
-Không cần Google OAuth/Drive API để có trải nghiệm preview cơ bản.
-
-App tự nhận diện:
-- Google Drive file.
-- Google Drive folder.
-- YouTube / YouTube Shorts.
-- Link ảnh trực tiếp.
-- Link web thông thường.
-- Link không hợp lệ.
-
-Đối với item **Ảnh/Video**:
-- Google Drive file có thumbnail được tải **lazy** và không chặn quá trình lưu item.
-- YouTube có thumbnail.
-- Link ảnh trực tiếp có preview.
-- Bottom Sheet chi tiết có preview/embed khi nhà cung cấp hỗ trợ.
-- Hiển thị loại link, nhà cung cấp và File ID/Video ID khi có thể phân tích từ URL.
-
-> Google Drive thumbnail/preview chỉ hiển thị nếu quyền chia sẻ của file cho phép trình duyệt truy cập. V1.6 không đọc nội dung file bằng Drive API và không thể xác nhận quyền truy cập file private chỉ từ URL.
-
-### 6. Data Diagnostics V1.6
-Data Tools tiếp tục phát hiện:
-- dữ liệu nghi trùng;
-- URL không hợp lệ;
-- media link không nhận diện rõ ràng;
-- Trash và backup snapshot.
-
-## Database
-
-Sheet `Vault` giữ nguyên schema V1.5:
+### 6. Media Proxy có hỗ trợ Range
+Route mới:
 
 ```text
-id | type | name | detail | url | createdAt | updatedAt | tags | pinned | useCount | lastUsedAt | collection | archived | deleted | deletedAt
+GET /api/media?fileId=GOOGLE_DRIVE_FILE_ID
 ```
 
-V1.6 tự tạo thêm sheet:
+Route forward HTTP `Range` sang Google Drive để video có thể seek mà không cần tải toàn bộ file trước.
+
+## Database V1.7
+
+Sheet `Vault` tự mở rộng thêm 2 cột cuối:
 
 ```text
-Classifications
-name | createdAt
+thumbnail | protected
 ```
 
-Không cần migrate thủ công.
+Schema đầy đủ:
 
-## Nâng cấp từ V1.5.0
+```text
+id | type | name | detail | url | createdAt | updatedAt | tags | pinned | useCount | lastUsedAt | collection | archived | deleted | deletedAt | thumbnail | protected
+```
 
-1. Mở Google Sheet database → **Extensions → Apps Script**.
-2. Thay toàn bộ `Code.gs` bằng `google-apps-script/Code.gs` của V1.6.0.
-3. Chọn **Deploy → Manage deployments → Edit → New version → Deploy**.
-4. Giữ nguyên Web App URL `/exec` và Script Property `DRIVEVAULT_API_KEY`.
-5. Deploy source V1.6.0 lên Vercel.
-6. Environment Variables vẫn giữ nguyên:
+Không cần migrate thủ công. Dữ liệu V1.6 cũ giữ nguyên; hai cột mới sẽ trống/false.
+
+`Backups` và `BackupData` tự kế thừa schema mới nên snapshot V1.7 chứa cả thumbnail/protected. Snapshot cũ vẫn restore được, hai trường mới sẽ mặc định rỗng/false.
+
+## Nâng cấp từ V1.6.0
+
+1. Mở Google Sheet → **Extensions → Apps Script**.
+2. Thay toàn bộ `Code.gs` bằng file `google-apps-script/Code.gs` của V1.7.0.
+3. **Deploy → Manage deployments → Edit → New version → Deploy**.
+4. Giữ nguyên Web App URL `/exec`.
+5. Giữ nguyên Script Property `DRIVEVAULT_API_KEY`.
+6. Deploy source V1.7.0 lên Vercel.
+7. Environment Variables giữ nguyên:
 
 ```env
 GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/xxxxx/exec
 DRIVEVAULT_API_KEY=your-secret-key
 ```
 
-7. Sau lần mở đầu tiên, sheet `Classifications` sẽ được tạo tự động khi app tải danh sách phân loại.
+## Lưu ý Google Drive media
+
+- Google Drive file phải có quyền phù hợp để route server có thể stream trực tiếp.
+- Với file chỉ cho tài khoản Google đăng nhập truy cập, player server-side có thể không đọc được; DriveVault sẽ fallback về Drive Preview iframe.
+- Không nên dùng video cực lớn như một CDN. `/api/media` chỉ phục vụ trải nghiệm xem nhanh/thumbnail trong ứng dụng.
+- Thumbnail custom được giới hạn khoảng 45 KB để không vượt giới hạn cell Google Sheets.
 
 ## Roadmap
 
 - ✅ **V1.0.0 – Mobile Quick Storage** — Media / Content / Other, copy nhanh, link Drive.
-- ✅ **V1.1.0 – Fast Capture & Mobile UX** — detail cho media, swipe, bottom sheet, light/dark.
+- ✅ **V1.1.0 – Fast Capture & Mobile UX** — detail media, swipe, bottom sheet, light/dark.
 - ✅ **V1.2.0 – Instant Save & Mobile Polish** — optimistic save, retry/idempotency, floating controls.
 - ✅ **V1.3.0 – Smart Library & Reliability** — tag, pin, recent/frequent, offline queue, sync state, undo delete.
 - ✅ **V1.4.0 – Search & Organization Pro** — advanced search, sort, collection, archive, bulk actions.
 - ✅ **V1.5.0 – Backup & Data Portability** — export/import, snapshots, restore, diagnostics, recycle bin.
-- ✅ **V1.6.0 – Media & Link Intelligence** — lazy thumbnail/preview, link intelligence, phân loại riêng, dashboard filter compact.
-- ⏭️ **V1.7.0 – Security & App Lock** — PIN lock, auto-lock, protected items và nền tảng xác thực tốt hơn trước khi đi lên V2.0.
+- ✅ **V1.6.0 – Media & Link Intelligence** — media/link intelligence, phân loại, compact dashboard.
+- ✅ **V1.7.0 – Security & App Lock** — PIN lock, auto-lock, protected items, in-app media player, fullscreen, custom video thumbnail.
+- ⏭️ **V2.0.0 – Google Account & Native Drive Integration** — Google Sign-In/OAuth, Drive Picker, upload file trực tiếp, quyền truy cập Drive theo tài khoản và đồng bộ đa thiết bị tốt hơn.
 
 ## Kiểm tra source
 
-- `google-apps-script/Code.gs` đã qua kiểm tra cú pháp JavaScript.
-- TypeScript chính đã được kiểm tra bằng TypeScript compiler với dependency stubs trong môi trường đóng gói.
-- `npm install` trong môi trường đóng gói bị timeout khi tải package nên chưa chạy được full `next build`; Vercel sẽ cài dependencies thật khi deploy.
+- `google-apps-script/Code.gs` đã qua JavaScript syntax check.
+- TypeScript/TSX chính đã được kiểm tra bằng TypeScript compiler với dependency stubs trong môi trường đóng gói.
+- `npm install` trong môi trường đóng gói bị timeout khi tải package nên chưa chạy được full `next build`; Vercel sẽ cài dependency thật khi deploy.

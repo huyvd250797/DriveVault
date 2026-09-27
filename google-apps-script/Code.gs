@@ -1,5 +1,5 @@
 /**
- * DriveVault V1.6.0 - Media & Link Intelligence
+ * DriveVault V1.7.0 - Security & App Lock + Media Pro
  * Google Sheets backend.
  */
 
@@ -7,7 +7,7 @@ const SHEET_NAME = 'Vault';
 const BACKUP_SHEET_NAME = 'Backups';
 const BACKUP_DATA_SHEET_NAME = 'BackupData';
 const CLASSIFICATION_SHEET_NAME = 'Classifications';
-const HEADERS = ['id', 'type', 'name', 'detail', 'url', 'createdAt', 'updatedAt', 'tags', 'pinned', 'useCount', 'lastUsedAt', 'collection', 'archived', 'deleted', 'deletedAt'];
+const HEADERS = ['id', 'type', 'name', 'detail', 'url', 'createdAt', 'updatedAt', 'tags', 'pinned', 'useCount', 'lastUsedAt', 'collection', 'archived', 'deleted', 'deletedAt', 'thumbnail', 'protected'];
 const BACKUP_HEADERS = ['id', 'createdAt', 'itemCount', 'note'];
 const BACKUP_DATA_HEADERS = ['backupId'].concat(HEADERS);
 const CLASSIFICATION_HEADERS = ['name', 'createdAt'];
@@ -111,7 +111,9 @@ function normalizeImportedItem_(input) {
     collection: normalizeCollection_(input && input.collection),
     archived: Boolean(input && input.archived),
     deleted: Boolean(input && input.deleted),
-    deletedAt: String((input && input.deletedAt) || '')
+    deletedAt: String((input && input.deletedAt) || ''),
+    thumbnail: String((input && input.thumbnail) || '').slice(0, 48000),
+    protected: Boolean(input && input.protected)
   };
 }
 
@@ -138,7 +140,9 @@ function createItem_(input) {
     collection: normalizeCollection_(input.collection),
     archived: Boolean(input.archived),
     deleted: Boolean(input.deleted),
-    deletedAt: String(input.deletedAt || '')
+    deletedAt: String(input.deletedAt || ''),
+    thumbnail: String(input.thumbnail || '').slice(0, 48000),
+    protected: Boolean(input.protected)
   };
 
   sheet.getRange(sheet.getLastRow() + 1, 1, 1, HEADERS.length).setValues([itemToRow_(item)]);
@@ -168,7 +172,9 @@ function updateItem_(input) {
     collection: typeof input.collection === 'string' ? normalizeCollection_(input.collection) : current.collection,
     archived: typeof input.archived === 'boolean' ? input.archived : current.archived,
     deleted: current.deleted,
-    deletedAt: current.deletedAt
+    deletedAt: current.deletedAt,
+    thumbnail: typeof input.thumbnail === 'string' ? String(input.thumbnail).slice(0, 48000) : current.thumbnail,
+    protected: typeof input.protected === 'boolean' ? input.protected : current.protected
   };
 
   sheet.getRange(row, 1, 1, HEADERS.length).setValues([itemToRow_(item)]);
@@ -262,7 +268,8 @@ function itemToRow_(item) {
   return [
     item.id, item.type, item.name, item.detail, item.url, item.createdAt, item.updatedAt,
     JSON.stringify(item.tags || []), Boolean(item.pinned), Math.max(0, Number(item.useCount || 0)),
-    item.lastUsedAt || '', normalizeCollection_(item.collection), Boolean(item.archived), Boolean(item.deleted), item.deletedAt || ''
+    item.lastUsedAt || '', normalizeCollection_(item.collection), Boolean(item.archived), Boolean(item.deleted), item.deletedAt || '',
+    String(item.thumbnail || '').slice(0, 48000), Boolean(item.protected)
   ];
 }
 
@@ -286,7 +293,9 @@ function rowToItem_(row) {
     collection: normalizeCollection_(row[11]),
     archived: row[12] === true || String(row[12]).toLowerCase() === 'true',
     deleted: row[13] === true || String(row[13]).toLowerCase() === 'true',
-    deletedAt: deletedAt
+    deletedAt: deletedAt,
+    thumbnail: String(row[15] || ''),
+    protected: row[16] === true || String(row[16]).toLowerCase() === 'true'
   };
 }
 
@@ -373,7 +382,9 @@ function importItems_(incoming, mode) {
         collection: item.collection || old.collection,
         archived: Boolean(item.archived),
         deleted: Boolean(item.deleted),
-        deletedAt: String(item.deletedAt || '')
+        deletedAt: String(item.deletedAt || ''),
+        thumbnail: String(item.thumbnail || old.thumbnail || '').slice(0, 48000),
+        protected: Boolean(item.protected || old.protected)
       };
       output[matchIndex] = merged;
       report.updated += 1;
@@ -484,7 +495,7 @@ function getSheet_() {
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
     sheet.setFrozenRows(1);
   } else {
-    // V1.6 giữ nguyên schema Vault V1.5; phân loại riêng nằm trong sheet Classifications.
+    // V1.7 tự mở rộng schema với thumbnail + protected; dữ liệu cũ được giữ nguyên.
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
   }
   return sheet;

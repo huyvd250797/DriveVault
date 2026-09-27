@@ -36,6 +36,14 @@ import {
   Upload,
   History,
   Link2,
+  Lock,
+  Unlock,
+  ShieldCheck,
+  Maximize2,
+  ImagePlus,
+  KeyRound,
+  Eye,
+  EyeOff,
   Trash2,
   Undo2,
   WifiOff,
@@ -43,10 +51,11 @@ import {
 } from "lucide-react";
 import type { BackupSnapshot, CreateVaultItem, ImportReport, StorageType, SyncState, VaultItem } from "@/lib/types";
 
-const CACHE_KEY = "drivevault-v160-items";
-const QUEUE_KEY = "drivevault-v160-sync-queue";
-const LEGACY_CACHE_KEY = "drivevault-v150-items";
-const LEGACY_QUEUE_KEY = "drivevault-v150-sync-queue";
+const CACHE_KEY = "drivevault-v170-items";
+const QUEUE_KEY = "drivevault-v170-sync-queue";
+const LEGACY_CACHE_KEY = "drivevault-v160-items";
+const LEGACY_QUEUE_KEY = "drivevault-v160-sync-queue";
+const SECURITY_KEY = "drivevault-v170-security";
 const DELETE_UNDO_MS = 5000;
 
 const typeMeta: Record<StorageType, { label: string; icon: typeof ImageIcon; className: string }> = {
@@ -85,6 +94,8 @@ const emptyForm: CreateVaultItem = {
   url: "",
   tags: [],
   collection: "Chưa phân loại",
+  thumbnail: "",
+  protected: false,
 };
 
 function normalizeUrl(value: string) {
@@ -169,6 +180,8 @@ function withDefaults(item: Partial<VaultItem>): VaultItem {
     archived: Boolean(item.archived),
     deleted: Boolean(item.deleted),
     deletedAt: String(item.deletedAt || ""),
+    thumbnail: String(item.thumbnail || ""),
+    protected: Boolean(item.protected),
     syncState: item.syncState || "synced",
   };
 }
@@ -276,7 +289,7 @@ function csvCell(value: unknown) {
 }
 
 function itemsToCsv(items: VaultItem[]) {
-  const headers = ["id","type","name","detail","url","createdAt","updatedAt","tags","pinned","useCount","lastUsedAt","collection","archived","deleted","deletedAt"];
+  const headers = ["id","type","name","detail","url","createdAt","updatedAt","tags","pinned","useCount","lastUsedAt","collection","archived","deleted","deletedAt","thumbnail","protected"];
   const rows = items.map((item) => headers.map((key) => csvCell((exportableItem(item) as Record<string, unknown>)[key])).join(","));
   return `\uFEFF${headers.join(",")}\n${rows.join("\n")}`;
 }
@@ -288,13 +301,46 @@ function normalizedDuplicateKey(item: VaultItem) {
   return `text:${text(item.name)}|${text(item.detail)}`;
 }
 
+type SecurityConfig = {
+  enabled: boolean;
+  salt: string;
+  hash: string;
+  autoLockMinutes: number;
+};
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = "";
+  bytes.forEach((value) => { binary += String.fromCharCode(value); });
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string) {
+  const binary = atob(value);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+async function derivePinHash(pin: string, saltBase64: string) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(pin), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: base64ToBytes(saltBase64), iterations: 120_000, hash: "SHA-256" }, key, 256);
+  return bytesToBase64(new Uint8Array(bits));
+}
+
+function createSalt() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return bytesToBase64(bytes);
+}
+
 type LinkIntel = {
-  kind: "none" | "drive-file" | "drive-folder" | "youtube" | "direct-image" | "web" | "invalid";
+  kind: "none" | "drive-file" | "drive-folder" | "youtube" | "direct-image" | "direct-video" | "web" | "invalid";
   provider: string;
   label: string;
   fileId?: string;
   thumbnailUrl?: string;
   embedUrl?: string;
+  streamUrl?: string;
 };
 
 function analyzeLink(value: string): LinkIntel {
@@ -315,8 +361,9 @@ function analyzeLink(value: string): LinkIntel {
         provider: "Google Drive",
         label: "Tệp Google Drive",
         fileId: id,
-        thumbnailUrl: `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w1200`,
+        thumbnailUrl: `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w1600`,
         embedUrl: `https://drive.google.com/file/d/${encodeURIComponent(id)}/preview`,
+        streamUrl: `/api/media?fileId=${encodeURIComponent(id)}`,
       };
       return { kind: "web", provider: "Google Drive", label: "Liên kết Drive" };
     }
@@ -326,11 +373,12 @@ function analyzeLink(value: string): LinkIntel {
       if (id) return {
         kind: "youtube", provider: "YouTube", label: "Video YouTube", fileId: id,
         thumbnailUrl: `https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg`,
-        embedUrl: `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}`,
+        embedUrl: `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?playsinline=1&rel=0`,
       };
     }
 
     if (/\.(?:png|jpe?g|gif|webp|avif)(?:$|\?)/i.test(url.href)) return { kind: "direct-image", provider: host, label: "Ảnh trực tiếp", thumbnailUrl: url.href };
+    if (/\.(?:mp4|webm|mov|m4v|ogv)(?:$|\?)/i.test(url.href)) return { kind: "direct-video", provider: host, label: "Video trực tiếp", streamUrl: url.href };
     return { kind: "web", provider: host, label: "Liên kết web" };
   } catch {
     return { kind: "invalid", provider: "", label: "Link không hợp lệ" };
@@ -343,22 +391,127 @@ function isSuspiciousDriveLink(item: VaultItem) {
   return intel.kind === "invalid" || (item.type === "media" && intel.kind === "web");
 }
 
-function MediaThumbnail({ url }: { url: string }) {
+function MediaThumbnail({ item }: { item: VaultItem }) {
   const [failed, setFailed] = useState(false);
-  const intel = analyzeLink(url);
-  if (!intel.thumbnailUrl || failed) return null;
-  return <div className="media-thumbnail"><img src={intel.thumbnailUrl} alt="" loading="lazy" onError={() => setFailed(true)} /></div>;
+  if (item.protected) return <div className="protected-media-placeholder"><Lock size={18}/><span>Media được bảo vệ</span></div>;
+  const intel = analyzeLink(item.url);
+  const source = item.thumbnail || intel.thumbnailUrl;
+  if (!source || failed) return null;
+  return <div className="media-thumbnail"><img src={source} alt={`Thumbnail ${item.name}`} loading="lazy" onError={() => setFailed(true)} /></div>;
 }
 
-function MediaDetailPreview({ url }: { url: string }) {
-  const [failed, setFailed] = useState(false);
-  const intel = analyzeLink(url);
-  if (!url) return null;
-  if (intel.embedUrl && !failed) {
-    return <div className="media-preview-frame"><iframe src={intel.embedUrl} title="Xem trước media" loading="lazy" allow="autoplay; encrypted-media; picture-in-picture" onError={() => setFailed(true)} /></div>;
+function requestElementFullscreen(element: HTMLElement | null) {
+  if (!element) return;
+  if (document.fullscreenElement) void document.exitFullscreen();
+  else void element.requestFullscreen?.();
+}
+
+function MediaDetailPreview({ item }: { item: VaultItem }) {
+  const intel = analyzeLink(item.url);
+  const [videoFailed, setVideoFailed] = useState(false);
+  const [driveImageFailed, setDriveImageFailed] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  if (!item.url) return null;
+
+  if (intel.kind === "direct-image") {
+    return <div className="media-viewer-shell" ref={stageRef}>
+      <button className="media-fullscreen" onClick={() => requestElementFullscreen(stageRef.current)} aria-label="Xem ảnh toàn màn hình"><Maximize2 size={17}/></button>
+      <img className="inapp-image" src={intel.thumbnailUrl} alt={item.name} onError={() => setImageFailed(true)} />
+      {imageFailed && <div className="media-player-error">Không tải được ảnh. Hãy kiểm tra quyền truy cập link.</div>}
+    </div>;
   }
-  if (intel.thumbnailUrl && !failed) return <div className="media-preview-image"><img src={intel.thumbnailUrl} alt="Xem trước media" onError={() => setFailed(true)} /></div>;
+
+  if ((intel.kind === "drive-file" || intel.kind === "direct-video") && intel.streamUrl && !videoFailed) {
+    return <div className="media-viewer-shell video-shell" ref={stageRef}>
+      <button className="media-fullscreen" onClick={() => requestElementFullscreen(stageRef.current)} aria-label="Xem video toàn màn hình"><Maximize2 size={17}/></button>
+      <video className="inapp-video" controls playsInline preload="metadata" poster={item.thumbnail || intel.thumbnailUrl} src={intel.streamUrl} onTimeUpdate={() => window.dispatchEvent(new Event("drivevault-activity"))} onError={() => setVideoFailed(true)} />
+    </div>;
+  }
+
+  if (intel.kind === "drive-file" && intel.streamUrl && videoFailed && !driveImageFailed) {
+    return <div className="media-viewer-shell" ref={stageRef}>
+      <button className="media-fullscreen" onClick={() => requestElementFullscreen(stageRef.current)} aria-label="Xem ảnh toàn màn hình"><Maximize2 size={17}/></button>
+      <img className="inapp-image" src={intel.streamUrl} alt={item.name} onError={() => setDriveImageFailed(true)} />
+    </div>;
+  }
+
+  if (intel.embedUrl) {
+    return <div className="media-viewer-shell video-shell" ref={stageRef}>
+      <button className="media-fullscreen" onClick={() => requestElementFullscreen(stageRef.current)} aria-label="Xem toàn màn hình"><Maximize2 size={17}/></button>
+      <iframe src={intel.embedUrl} title={`Xem ${item.name}`} loading="lazy" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen />
+    </div>;
+  }
+
+  if (intel.thumbnailUrl && !imageFailed) {
+    return <div className="media-viewer-shell" ref={stageRef}>
+      <button className="media-fullscreen" onClick={() => requestElementFullscreen(stageRef.current)} aria-label="Xem ảnh toàn màn hình"><Maximize2 size={17}/></button>
+      <img className="inapp-image" src={item.thumbnail || intel.thumbnailUrl} alt={item.name} onError={() => setImageFailed(true)} />
+    </div>;
+  }
   return null;
+}
+
+function compressVideoFrame(video: HTMLVideoElement) {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!width || !height) throw new Error("Video chưa sẵn sàng để lấy thumbnail.");
+  const targets = [480, 420, 360, 300];
+  for (const maxWidth of targets) {
+    const scale = Math.min(1, maxWidth / width);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) continue;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    for (const quality of [0.68, 0.56, 0.46, 0.36]) {
+      const data = canvas.toDataURL("image/jpeg", quality);
+      if (data.length <= 45_000) return data;
+    }
+  }
+  throw new Error("Khung hình quá lớn để lưu vào Google Sheet.");
+}
+
+function VideoThumbnailPicker({ url, value, onChange }: { url: string; value: string; onChange: (value: string) => void }) {
+  const intel = analyzeLink(url);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [duration, setDuration] = useState(0);
+  const [time, setTime] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const [message, setMessage] = useState("");
+  const streamUrl = intel.kind === "drive-file" ? intel.streamUrl : intel.kind === "direct-video" ? intel.streamUrl : "";
+  if (!streamUrl) {
+    if (intel.thumbnailUrl) return <div className="thumbnail-picker static"><img src={value || intel.thumbnailUrl} alt="Thumbnail"/><div><strong>Thumbnail tự động</strong><span>Link này không hỗ trợ kéo chọn khung hình trong trình duyệt.</span></div></div>;
+    return null;
+  }
+
+  function seek(next: number) {
+    setTime(next);
+    if (videoRef.current && Number.isFinite(next)) videoRef.current.currentTime = next;
+  }
+
+  function capture() {
+    try {
+      if (!videoRef.current) return;
+      const data = compressVideoFrame(videoRef.current);
+      onChange(data);
+      setMessage("Đã chọn khung hình hiện tại làm thumbnail.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Không lấy được thumbnail.");
+    }
+  }
+
+  return <div className="thumbnail-picker">
+    <div className="thumbnail-picker-head"><div><ImagePlus size={17}/><span><strong>Thumbnail video</strong><small>Kéo thanh thời gian → chọn khung hình</small></span></div>{value && <button type="button" onClick={() => onChange("")}>Dùng tự động</button>}</div>
+    <div className="thumbnail-video-wrap">
+      <video ref={videoRef} muted playsInline preload="metadata" src={streamUrl} poster={value || intel.thumbnailUrl} onLoadedMetadata={(e) => { const d = e.currentTarget.duration; if (Number.isFinite(d)) setDuration(d); }} onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)} onError={() => setFailed(true)} />
+      {failed && <div className="thumbnail-video-error">Không đọc được video trực tiếp. Hãy kiểm tra quyền chia sẻ Drive là “Bất kỳ ai có liên kết”.</div>}
+    </div>
+    {!failed && <><input className="thumbnail-range" type="range" min="0" max={duration || 1} step="0.1" value={Math.min(time, duration || 1)} onChange={(e) => seek(Number(e.target.value))}/><div className="thumbnail-picker-actions"><span>{Math.floor(time)}s / {duration ? Math.floor(duration) : 0}s</span><button type="button" onClick={capture}><ImagePlus size={15}/> Dùng khung hình này</button></div></>}
+    {value && <img className="thumbnail-selected-preview" src={value} alt="Thumbnail đã chọn"/>}
+    {message && <div className="thumbnail-message">{message}</div>}
+  </div>;
 }
 
 function SyncBadge({ state }: { state?: SyncState }) {
@@ -400,12 +553,12 @@ function SwipeCard({
   const meta = typeMeta[item.type] || typeMeta.other;
   const Icon = meta.icon;
   const intel = analyzeLink(item.url);
-  const actionsVisible = !selectionMode && offset < -2;
+  const actionsVisible = !selectionMode && !item.protected && offset < -2;
 
   useEffect(() => { if (selectionMode) setOffset(0); }, [selectionMode]);
 
   function pointerDown(e: React.PointerEvent) {
-    if (selectionMode) return;
+    if (selectionMode || item.protected) return;
     startX.current = e.clientX;
     startOffset.current = offset;
     moved.current = false;
@@ -459,7 +612,7 @@ function SwipeCard({
           <div className="card-head-left">
             <span className={`badge ${meta.className}`}><Icon size={14} />{meta.label}</span>
             {item.pinned && <span className="pin-label"><Pin size={12} /> Ghim</span>}
-            {item.archived && <span className="archive-label"><Archive size={12} /> Lưu trữ</span>}{item.deleted && <span className="trash-label"><Trash2 size={12} /> Thùng rác</span>}
+            {item.archived && <span className="archive-label"><Archive size={12} /> Lưu trữ</span>}{item.protected && <span className="protected-label"><Lock size={12}/> Bảo vệ</span>}{item.deleted && <span className="trash-label"><Trash2 size={12} /> Thùng rác</span>}
           </div>
           {!selectionMode && !item.deleted && <button className={`pin-button ${item.pinned ? "active" : ""}`} onClick={(e) => { e.stopPropagation(); onTogglePin(); }} aria-label={item.pinned ? "Bỏ ghim" : "Ghim mục này"}>{item.pinned ? <PinOff size={17} /> : <Pin size={17} />}</button>}
         </div>
@@ -473,9 +626,9 @@ function SwipeCard({
         </div>
 
         <div className="collection-label"><Folder size={13} /> {item.collection}</div>
-        {item.type === "media" && item.url && <MediaThumbnail url={item.url} />}
-        {item.url && <div className={`link-intel-row ${intel.kind === "invalid" ? "invalid" : ""}`}><Link2 size={12}/><span>{intel.label}</span>{intel.provider && <small>{intel.provider}</small>}</div>}
-        {item.detail && <p className="detail">{item.detail}</p>}
+        {item.type === "media" && item.url && <MediaThumbnail item={item} />}
+        {!item.protected && item.url && <div className={`link-intel-row ${intel.kind === "invalid" ? "invalid" : ""}`}><Link2 size={12}/><span>{intel.label}</span>{intel.provider && <small>{intel.provider}</small>}</div>}
+        {item.protected ? <p className="detail protected-detail"><Lock size={13}/> Nội dung được bảo vệ · chạm block để xác thực</p> : item.detail && <p className="detail">{item.detail}</p>}
         {item.tags.length > 0 && <div className="tag-row">{item.tags.slice(0, 3).map((tag) => <span className="tag" key={tag}>#{tag}</span>)}{item.tags.length > 3 && <span className="tag more">+{item.tags.length - 3}</span>}</div>}
 
         <div className="card-status-row">
@@ -483,7 +636,7 @@ function SwipeCard({
           {item.lastUsedAt && <span className="last-used">{formatRelative(item.lastUsedAt)}</span>}
         </div>
 
-        {!selectionMode && !item.deleted && <div className="actions" onClick={(e) => e.stopPropagation()}>
+        {!selectionMode && !item.deleted && !item.protected && <div className="actions" onClick={(e) => e.stopPropagation()}>
           {item.detail && <button className="secondary" onClick={onCopy}><Clipboard size={17} /> Sao chép</button>}
           {item.url && <a className="primary" href={item.url} target="_blank" rel="noreferrer" onClick={onOpenUrl}><ExternalLink size={17} /> Truy cập</a>}
         </div>}
@@ -535,6 +688,21 @@ export default function DriveVaultApp() {
   const [classifications, setClassifications] = useState<string[]>([]);
   const [newClassification, setNewClassification] = useState("");
   const [classificationBusy, setClassificationBusy] = useState(false);
+  const [securityReady, setSecurityReady] = useState(false);
+  const [securityConfig, setSecurityConfig] = useState<SecurityConfig | null>(null);
+  const [locked, setLocked] = useState(false);
+  const [showSecurity, setShowSecurity] = useState(false);
+  const [securityPin, setSecurityPin] = useState("");
+  const [securityPinConfirm, setSecurityPinConfirm] = useState("");
+  const [securityOldPin, setSecurityOldPin] = useState("");
+  const [securityError, setSecurityError] = useState("");
+  const [securityBusy, setSecurityBusy] = useState(false);
+  const [showPin, setShowPin] = useState(false);
+  const [unlockPin, setUnlockPin] = useState("");
+  const [unlockError, setUnlockError] = useState("");
+  const [protectedTargetId, setProtectedTargetId] = useState<string | null>(null);
+  const [protectedPin, setProtectedPin] = useState("");
+  const [protectedError, setProtectedError] = useState("");
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const scrollIdleTimer = useRef<number | null>(null);
@@ -542,6 +710,7 @@ export default function DriveVaultApp() {
   const queueRef = useRef<QueueOperation[]>([]);
   const itemsRef = useRef<VaultItem[]>([]);
   const flushingRef = useRef(false);
+  const autoLockTimer = useRef<number | null>(null);
 
   const selected = selectedId ? items.find((item) => item.id === selectedId) || null : null;
 
@@ -555,6 +724,105 @@ export default function DriveVaultApp() {
     setToast(message);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(""), 1900);
+  }
+
+  async function verifyPin(pin: string, config = securityConfig) {
+    if (!config?.enabled || !config.salt || !config.hash) return false;
+    if (!/^\d{4,8}$/.test(pin)) return false;
+    return (await derivePinHash(pin, config.salt)) === config.hash;
+  }
+
+  async function saveSecurity() {
+    setSecurityError("");
+    if (!/^\d{4,8}$/.test(securityPin)) return setSecurityError("PIN cần từ 4–8 chữ số.");
+    if (securityPin !== securityPinConfirm) return setSecurityError("Xác nhận PIN chưa khớp.");
+    setSecurityBusy(true);
+    try {
+      if (securityConfig?.enabled && !(await verifyPin(securityOldPin))) {
+        setSecurityError("PIN hiện tại không đúng.");
+        return;
+      }
+      const salt = createSalt();
+      const next: SecurityConfig = {
+        enabled: true,
+        salt,
+        hash: await derivePinHash(securityPin, salt),
+        autoLockMinutes: securityConfig?.autoLockMinutes || 5,
+      };
+      window.localStorage.setItem(SECURITY_KEY, JSON.stringify(next));
+      setSecurityConfig(next);
+      setLocked(false);
+      setSecurityPin(""); setSecurityPinConfirm(""); setSecurityOldPin("");
+      notify(securityConfig?.enabled ? "Đã đổi PIN" : "Đã bật App Lock");
+    } finally { setSecurityBusy(false); }
+  }
+
+  async function disableSecurity() {
+    setSecurityError("");
+    if (!securityConfig?.enabled) return;
+    setSecurityBusy(true);
+    try {
+      if (!(await verifyPin(securityOldPin))) return setSecurityError("PIN hiện tại không đúng.");
+      window.localStorage.removeItem(SECURITY_KEY);
+      setSecurityConfig(null);
+      setLocked(false);
+      setSecurityOldPin(""); setSecurityPin(""); setSecurityPinConfirm("");
+      setItems((current) => current.map((item) => item.protected ? { ...item, protected: false, syncState: "pending" } : item));
+      itemsRef.current.filter((item) => item.protected).forEach((item) => {
+        const updated = { ...item, protected: false, syncState: "pending" as SyncState };
+        enqueue({ opId: createClientId(), type: "update", targetId: item.id, item: updated });
+      });
+      notify("Đã tắt App Lock");
+    } finally { setSecurityBusy(false); }
+  }
+
+  function updateAutoLock(minutes: number) {
+    if (!securityConfig) return;
+    const next = { ...securityConfig, autoLockMinutes: minutes };
+    setSecurityConfig(next);
+    window.localStorage.setItem(SECURITY_KEY, JSON.stringify(next));
+    notify("Đã cập nhật thời gian tự khóa");
+  }
+
+  async function unlockWithPin(pin: string) {
+    if (!(await verifyPin(pin))) return false;
+    setLocked(false);
+    setSecurityError("");
+    return true;
+  }
+
+  function lockNow() {
+    if (!securityConfig?.enabled) return setShowSecurity(true);
+    setShowSecurity(false);
+    setSelectedId(null);
+    setShowForm(false);
+    setShowDataTools(false);
+    setAdvancedOpen(false);
+    setLocked(true);
+  }
+
+  function openItem(item: VaultItem) {
+    if (item.protected && !securityConfig?.enabled) {
+      openSecuritySettings();
+      notify("Mục này được bảo vệ · hãy bật App Lock trên thiết bị này");
+      return;
+    }
+    if (item.protected && securityConfig?.enabled) {
+      setProtectedTargetId(item.id);
+      setProtectedPin("");
+      setProtectedError("");
+      return;
+    }
+    setSelectedId(item.id);
+  }
+
+  async function verifyProtectedItem() {
+    if (!(await verifyPin(protectedPin))) return setProtectedError("PIN không đúng.");
+    const id = protectedTargetId;
+    setProtectedTargetId(null);
+    setProtectedPin("");
+    setProtectedError("");
+    if (id) setSelectedId(id);
   }
 
   const loadItems = useCallback(async (quiet = false) => {
@@ -646,11 +914,53 @@ export default function DriveVaultApp() {
   }
 
   useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SECURITY_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as SecurityConfig;
+        if (parsed?.enabled && parsed.salt && parsed.hash) {
+          const normalized: SecurityConfig = { ...parsed, autoLockMinutes: Math.max(1, Number(parsed.autoLockMinutes || 5)) };
+          setSecurityConfig(normalized);
+          setLocked(true);
+        }
+      }
+    } catch {
+      window.localStorage.removeItem(SECURITY_KEY);
+    } finally {
+      setSecurityReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!securityReady || locked || !securityConfig?.enabled) return;
+    const timeoutMs = Math.max(1, securityConfig.autoLockMinutes) * 60_000;
+    const arm = () => {
+      if (autoLockTimer.current) clearTimeout(autoLockTimer.current);
+      autoLockTimer.current = window.setTimeout(() => setLocked(true), timeoutMs);
+    };
+    const activity = () => arm();
+    arm();
+    window.addEventListener("pointerdown", activity, { passive: true });
+    window.addEventListener("keydown", activity);
+    window.addEventListener("touchstart", activity, { passive: true });
+    window.addEventListener("scroll", activity, { passive: true });
+    window.addEventListener("drivevault-activity", activity);
+    return () => {
+      if (autoLockTimer.current) clearTimeout(autoLockTimer.current);
+      window.removeEventListener("pointerdown", activity);
+      window.removeEventListener("keydown", activity);
+      window.removeEventListener("touchstart", activity);
+      window.removeEventListener("scroll", activity);
+      window.removeEventListener("drivevault-activity", activity);
+    };
+  }, [securityReady, locked, securityConfig]);
+
+  useEffect(() => {
     queueRef.current = readQueue();
     setPendingCount(queueRef.current.length);
     const cached = readLocalItems();
     if (cached.length) setItems(applyQueueToItems(cached, queueRef.current));
-    // Migrate cache/queue V1.5 sang namespace V1.6 trước khi xóa key cũ.
+    // Migrate cache/queue V1.6 sang namespace V1.7 trước khi xóa key cũ.
     window.localStorage.setItem(QUEUE_KEY, JSON.stringify(queueRef.current));
     if (cached.length) window.localStorage.setItem(CACHE_KEY, JSON.stringify(cached));
     setOnline(navigator.onLine);
@@ -699,7 +1009,7 @@ export default function DriveVaultApp() {
   }, []);
 
   useEffect(() => {
-    if (!showForm && !selected && !showDataTools && !advancedOpen) return;
+    if (!showForm && !selected && !showDataTools && !advancedOpen && !showSecurity && !protectedTargetId) return;
     const scrollY = window.scrollY;
     const body = document.body;
     const previous = { position: body.style.position, top: body.style.top, left: body.style.left, right: body.style.right, width: body.style.width, overflow: body.style.overflow };
@@ -710,7 +1020,7 @@ export default function DriveVaultApp() {
     body.style.width = "100%";
     body.style.overflow = "hidden";
     return () => { Object.assign(body.style, previous); window.scrollTo(0, scrollY); };
-  }, [showForm, selected, showDataTools, advancedOpen]);
+  }, [showForm, selected, showDataTools, advancedOpen, showSecurity, protectedTargetId]);
 
   const liveItems = useMemo(() => items.filter((item) => !item.deleted), [items]);
   const allTags = useMemo(() => Array.from(new Set(liveItems.flatMap((item) => item.tags))).sort((a, b) => a.localeCompare(b, "vi")), [liveItems]);
@@ -796,7 +1106,7 @@ export default function DriveVaultApp() {
 
   function openEdit(item: VaultItem) {
     setEditingId(item.id);
-    setForm({ type: item.type, name: item.name, detail: item.detail, url: item.url, tags: item.tags, pinned: item.pinned, collection: item.collection, archived: item.archived });
+    setForm({ type: item.type, name: item.name, detail: item.detail, url: item.url, tags: item.tags, pinned: item.pinned, collection: item.collection, archived: item.archived, thumbnail: item.thumbnail, protected: item.protected });
     setTagText(item.tags.join(", "));
     setSelectedId(null);
     setError("");
@@ -821,6 +1131,8 @@ export default function DriveVaultApp() {
       const optimisticItem: VaultItem = {
         id: createClientId(), type: form.type, name, detail, url, tags, collection,
         pinned: Boolean(form.pinned), archived: false, deleted: false, deletedAt: "", useCount: 0, lastUsedAt: "",
+        thumbnail: form.type === "media" ? String(form.thumbnail || "") : "",
+        protected: Boolean(form.protected && securityConfig?.enabled),
         createdAt: now, updatedAt: now, syncState: "pending",
       };
       setItems((current) => [optimisticItem, ...current]);
@@ -832,7 +1144,7 @@ export default function DriveVaultApp() {
 
     const current = items.find((item) => item.id === editingId);
     if (!current) return setError("Không tìm thấy dữ liệu cần sửa.");
-    const updated: VaultItem = { ...current, type: form.type, name, detail, url, tags, collection, updatedAt: now, syncState: "pending" };
+    const updated: VaultItem = { ...current, type: form.type, name, detail, url, tags, collection, thumbnail: form.type === "media" ? String(form.thumbnail || "") : "", protected: Boolean(form.protected && securityConfig?.enabled), updatedAt: now, syncState: "pending" };
     setSaving(true);
     setItems((list) => list.map((item) => item.id === editingId ? updated : item));
     setForm(emptyForm); setTagText(""); setEditingId(null); setShowForm(false);
@@ -1153,6 +1465,25 @@ export default function DriveVaultApp() {
     void flushQueue().then(() => loadItems(true));
   }
 
+  async function submitUnlock(e: React.FormEvent) {
+    e.preventDefault();
+    setUnlockError("");
+    if (!(await unlockWithPin(unlockPin))) {
+      setUnlockError("PIN không đúng.");
+      return;
+    }
+    setUnlockPin("");
+  }
+
+  function openSecuritySettings() {
+    setSecurityOldPin("");
+    setSecurityPin("");
+    setSecurityPinConfirm("");
+    setSecurityError("");
+    setShowPin(false);
+    setShowSecurity(true);
+  }
+
   const activeFilterCount = [
     libraryMode !== "all", sortMode !== "smart", selectedTag !== "all", selectedCollection !== "all",
     Boolean(dateFrom), Boolean(dateTo), linkFilter !== "all", selectionMode,
@@ -1162,18 +1493,40 @@ export default function DriveVaultApp() {
   const visibleSelectedCount = filtered.filter((item) => selectedIds.has(item.id)).length;
   const allVisibleSelected = filtered.length > 0 && visibleSelectedCount === filtered.length;
 
+  if (!securityReady) {
+    return <main className="lock-shell"><div className="lock-card"><div className="lock-logo"><ShieldCheck size={28}/></div><strong>DriveVault</strong><span>Đang khởi tạo bảo mật...</span></div></main>;
+  }
+
+  if (locked && securityConfig?.enabled) {
+    return <main className="lock-shell">
+      <section className="lock-card">
+        <div className="lock-logo"><Lock size={28}/></div>
+        <div className="eyebrow">DRIVEVAULT · V1.7.0</div>
+        <h1>Ứng dụng đã khóa</h1>
+        <p>Nhập PIN để mở kho dữ liệu trên thiết bị này.</p>
+        <form className="unlock-form" onSubmit={submitUnlock}>
+          <div className="pin-input-wrap"><KeyRound size={18}/><input autoFocus inputMode="numeric" pattern="[0-9]*" maxLength={8} type={showPin ? "text" : "password"} value={unlockPin} onChange={(e) => setUnlockPin(e.target.value.replace(/\D/g, ""))} placeholder="PIN 4–8 số"/><button type="button" onClick={() => setShowPin((v) => !v)}>{showPin ? <EyeOff size={18}/> : <Eye size={18}/>}</button></div>
+          {unlockError && <div className="security-error">{unlockError}</div>}
+          <button className="save" type="submit"><Unlock size={18}/> Mở khóa</button>
+        </form>
+        <small>PIN chỉ dùng cho App Lock trên thiết bị hiện tại.</small>
+      </section>
+    </main>;
+  }
+
   return (
     <main className="shell">
       <header className="topbar compact-topbar">
         <button className="brand-button" onClick={resetDashboard} aria-label="DriveVault · làm mới và xóa bộ lọc">
           <span className="brand-mark"><Database size={21}/></span>
           <span className="brand-copy">
-            <span className="eyebrow">DRIVEVAULT · V1.6.0</span>
+            <span className="eyebrow">DRIVEVAULT · V1.7.0</span>
             <strong>Kho dùng nhanh</strong>
-            <small>Media intelligence · phân loại thông minh</small>
+            <small>App Lock · xem media & thumbnail video</small>
           </span>
         </button>
         <div className="top-actions">
+          <button className={`icon-button ${securityConfig?.enabled ? "security-on" : ""}`} aria-label="Security & App Lock" onClick={openSecuritySettings}>{securityConfig?.enabled ? <Lock size={19}/> : <ShieldCheck size={19}/>}</button>
           <button className="icon-button" aria-label="Backup & Data Portability" onClick={openDataTools}><Database size={19} /></button>
           <button className="icon-button" aria-label="Đổi giao diện sáng tối" onClick={() => setTheme((t) => t === "dark" ? "light" : "dark")}>{theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}</button>
           <button className="icon-button" aria-label="Tải lại và đồng bộ" onClick={resetDashboard} disabled={loading}><RefreshCcw size={19} className={loading ? "spin" : ""} /></button>
@@ -1280,7 +1633,7 @@ export default function DriveVaultApp() {
           <SwipeCard
             key={item.id}
             item={item}
-            onOpen={() => setSelectedId(item.id)}
+            onOpen={() => openItem(item)}
             onEdit={() => item.deleted ? restoreTrashItem(item) : openEdit(item)}
             onDelete={() => item.deleted ? purgeItem(item) : deleteItem(item)}
             onCopy={() => copyItem(item)}
@@ -1320,7 +1673,7 @@ export default function DriveVaultApp() {
           <section className="modal data-tools-sheet" role="dialog" aria-modal="true" aria-labelledby="data-tools-title">
             <div className="sheet-handle" />
             <div className="modal-head">
-              <div><div className="eyebrow">V1.6 · DATA & LINK INTELLIGENCE</div><h2 id="data-tools-title">Backup & dữ liệu</h2></div>
+              <div><div className="eyebrow">V1.7 · SECURITY & DATA</div><h2 id="data-tools-title">Backup & dữ liệu</h2></div>
               <button className="icon-button" onClick={() => setShowDataTools(false)} disabled={dataBusy}><X size={20}/></button>
             </div>
 
@@ -1381,6 +1734,62 @@ export default function DriveVaultApp() {
         </div>
       )}
 
+      {showSecurity && (
+        <div className="modal-backdrop security-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !securityBusy) setShowSecurity(false); }}>
+          <section className="modal security-sheet" role="dialog" aria-modal="true" aria-labelledby="security-title">
+            <div className="sheet-handle" />
+            <div className="modal-head">
+              <div><div className="eyebrow">V1.7 · SECURITY & APP LOCK</div><h2 id="security-title">Bảo mật ứng dụng</h2></div>
+              <button className="icon-button" onClick={() => setShowSecurity(false)} disabled={securityBusy}><X size={20}/></button>
+            </div>
+            <div className="security-content">
+              <div className={`security-status ${securityConfig?.enabled ? "enabled" : ""}`}>
+                <span className="security-status-icon">{securityConfig?.enabled ? <Lock size={20}/> : <ShieldCheck size={20}/>}</span>
+                <div><strong>{securityConfig?.enabled ? "App Lock đang bật" : "App Lock đang tắt"}</strong><span>{securityConfig?.enabled ? "PIN được băm bằng PBKDF2 và chỉ lưu trên thiết bị này." : "Tạo PIN để khóa app và bảo vệ từng block."}</span></div>
+              </div>
+
+              {securityConfig?.enabled && <section className="security-section">
+                <div className="security-section-title"><strong>Tự động khóa</strong><span>Khóa lại khi không thao tác</span></div>
+                <select value={securityConfig.autoLockMinutes} onChange={(e) => updateAutoLock(Number(e.target.value))}>
+                  <option value={1}>Sau 1 phút</option><option value={5}>Sau 5 phút</option><option value={15}>Sau 15 phút</option><option value={30}>Sau 30 phút</option><option value={60}>Sau 60 phút</option>
+                </select>
+                <button className="secondary security-lock-now" onClick={lockNow}><Lock size={16}/> Khóa ngay</button>
+              </section>}
+
+              <section className="security-section">
+                <div className="security-section-title"><strong>{securityConfig?.enabled ? "Đổi PIN" : "Tạo PIN"}</strong><span>PIN từ 4–8 chữ số</span></div>
+                {securityConfig?.enabled && <div className="pin-input-wrap"><KeyRound size={17}/><input inputMode="numeric" pattern="[0-9]*" maxLength={8} type={showPin ? "text" : "password"} value={securityOldPin} onChange={(e) => setSecurityOldPin(e.target.value.replace(/\D/g, ""))} placeholder="PIN hiện tại"/></div>}
+                <div className="pin-input-wrap"><Lock size={17}/><input inputMode="numeric" pattern="[0-9]*" maxLength={8} type={showPin ? "text" : "password"} value={securityPin} onChange={(e) => setSecurityPin(e.target.value.replace(/\D/g, ""))} placeholder="PIN mới"/><button type="button" onClick={() => setShowPin((v) => !v)}>{showPin ? <EyeOff size={17}/> : <Eye size={17}/>}</button></div>
+                <div className="pin-input-wrap"><Check size={17}/><input inputMode="numeric" pattern="[0-9]*" maxLength={8} type={showPin ? "text" : "password"} value={securityPinConfirm} onChange={(e) => setSecurityPinConfirm(e.target.value.replace(/\D/g, ""))} placeholder="Nhập lại PIN mới"/></div>
+                {securityError && <div className="security-error">{securityError}</div>}
+                <button className="save" onClick={() => void saveSecurity()} disabled={securityBusy}>{securityBusy ? <Loader2 size={17} className="spin"/> : <ShieldCheck size={17}/>} {securityConfig?.enabled ? "Đổi PIN" : "Bật App Lock"}</button>
+              </section>
+
+              {securityConfig?.enabled && <section className="security-section danger-security">
+                <strong>Tắt App Lock</strong><span>Nhập PIN hiện tại ở trên rồi tắt. Các mục đang đánh dấu bảo vệ sẽ được bỏ bảo vệ.</span>
+                <button className="danger-outline" onClick={() => void disableSecurity()} disabled={securityBusy}><Unlock size={16}/> Tắt App Lock</button>
+              </section>}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {protectedTargetId && (
+        <div className="modal-backdrop protected-verify-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setProtectedTargetId(null); }}>
+          <section className="modal protected-verify-sheet" role="dialog" aria-modal="true" aria-labelledby="protected-verify-title">
+            <div className="sheet-handle" />
+            <div className="modal-head"><div><div className="eyebrow">PROTECTED ITEM</div><h2 id="protected-verify-title">Xác thực để xem</h2></div><button className="icon-button" onClick={() => setProtectedTargetId(null)}><X size={20}/></button></div>
+            <div className="protected-verify-content">
+              <div className="lock-logo small"><Lock size={22}/></div>
+              <p>Block này được bảo vệ. Nhập PIN App Lock để mở nội dung.</p>
+              <div className="pin-input-wrap"><KeyRound size={18}/><input autoFocus inputMode="numeric" pattern="[0-9]*" maxLength={8} type={showPin ? "text" : "password"} value={protectedPin} onChange={(e) => setProtectedPin(e.target.value.replace(/\D/g, ""))} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void verifyProtectedItem(); } }} placeholder="PIN"/><button type="button" onClick={() => setShowPin((v) => !v)}>{showPin ? <EyeOff size={18}/> : <Eye size={18}/>}</button></div>
+              {protectedError && <div className="security-error">{protectedError}</div>}
+              <button className="save" onClick={() => void verifyProtectedItem()}><Unlock size={18}/> Mở nội dung</button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {showForm && (
         <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) setShowForm(false); }}>
           <section className="modal" role="dialog" aria-modal="true" aria-labelledby="form-title">
@@ -1395,7 +1804,9 @@ export default function DriveVaultApp() {
               <label>Phân loại<input list="collection-options" maxLength={80} value={form.collection || ""} onChange={(e) => setForm((f) => ({ ...f, collection: e.target.value }))} placeholder="VD: Shopee" /><datalist id="collection-options">{collections.map((name) => <option key={name} value={name}/>)}</datalist></label>
               <label>Tag <small>(phân cách bằng dấu phẩy)</small><input value={tagText} onChange={(e) => setTagText(e.target.value)} placeholder="VD: công việc, email, mẫu" /></label>
               <label>Nội dung chi tiết {form.type === "media" && <small>(không bắt buộc)</small>}{form.type === "other" && <small>(không bắt buộc nếu có link)</small>}<textarea rows={7} value={form.detail} onChange={(e) => setForm((f) => ({ ...f, detail: e.target.value }))} placeholder={form.type === "media" ? "Mô tả ảnh/video, ghi chú, nội dung liên quan..." : "Nhập nội dung cần lưu để sao chép nhanh..."} /></label>
-              {(form.type === "media" || form.type === "other") && <label>Đường link Google Drive {form.type === "other" && <small>(không bắt buộc)</small>}<input inputMode="url" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} placeholder="https://drive.google.com/..." /></label>}
+              {(form.type === "media" || form.type === "other") && <label>Đường link Google Drive {form.type === "other" && <small>(không bắt buộc)</small>}<input inputMode="url" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value, thumbnail: e.target.value === f.url ? f.thumbnail : "" }))} placeholder="https://drive.google.com/..." /></label>}
+              {form.type === "media" && normalizeUrl(form.url || "") && <VideoThumbnailPicker url={form.url || ""} value={String(form.thumbnail || "")} onChange={(thumbnail) => setForm((f) => ({ ...f, thumbnail }))} />}
+              <label className={`protected-toggle ${!securityConfig?.enabled ? "disabled" : ""}`}><span><Lock size={16}/><span><strong>Bảo vệ mục này</strong><small>{securityConfig?.enabled ? "Yêu cầu PIN khi mở block" : "Bật App Lock trước để sử dụng"}</small></span></span><input type="checkbox" checked={Boolean(form.protected && securityConfig?.enabled)} disabled={!securityConfig?.enabled} onChange={(e) => setForm((f) => ({ ...f, protected: e.target.checked }))}/></label>
               <button className="save" disabled={saving}>{saving ? <Loader2 size={18} className="spin" /> : editingId ? <Pencil size={18}/> : <Plus size={18}/>} {saving ? "Đang lưu..." : editingId ? "Lưu thay đổi" : "Lưu mục"}</button>
             </form>
           </section>
@@ -1412,10 +1823,10 @@ export default function DriveVaultApp() {
             </div>
             <div className="detail-content">
               <h2 id="detail-title">{selected.name}</h2>
-              <div className="collection-label detail-collection"><Folder size={14}/>{selected.collection}{selected.archived && <span><Archive size={13}/> Đã lưu trữ</span>}{selected.deleted && <span className="trash-inline"><Trash2 size={13}/> Thùng rác {selected.deletedAt ? `· ${formatDate(selected.deletedAt)}` : ""}</span>}</div>
+              <div className="collection-label detail-collection"><Folder size={14}/>{selected.collection}{selected.archived && <span><Archive size={13}/> Đã lưu trữ</span>}{selected.protected && <span><Lock size={13}/> Được bảo vệ</span>}{selected.deleted && <span className="trash-inline"><Trash2 size={13}/> Thùng rác {selected.deletedAt ? `· ${formatDate(selected.deletedAt)}` : ""}</span>}</div>
               <div className="detail-date">Đã lưu {formatDate(selected.createdAt)} · đã dùng {selected.useCount} lần{selected.lastUsedAt ? ` · ${formatRelative(selected.lastUsedAt)}` : ""}</div>
               <SyncBadge state={selected.syncState} />
-              {selected.type === "media" && selected.url && <MediaDetailPreview url={selected.url} />}
+              {selected.type === "media" && selected.url && <MediaDetailPreview item={selected} />}
               {selected.url && (() => { const intel = analyzeLink(selected.url); return <div className={`link-intel-panel ${intel.kind === "invalid" ? "invalid" : ""}`}><div><Link2 size={15}/><strong>{intel.label}</strong></div><span>{intel.provider || "Không nhận diện"}{intel.fileId ? ` · ID: ${intel.fileId}` : ""}</span></div>; })()}
               {selected.tags.length > 0 && <div className="tag-row detail-tags">{selected.tags.map((tag) => <span className="tag" key={tag}>#{tag}</span>)}</div>}
               {selected.detail ? <div className="full-detail">{selected.detail}</div> : <div className="no-detail">Không có nội dung chi tiết.</div>}
