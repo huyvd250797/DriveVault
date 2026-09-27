@@ -1,90 +1,102 @@
-# DriveVault Mobile V1.3.0 – Smart Library & Reliability
+# DriveVault Mobile V1.4.0 – Search & Organization Pro
 
-V1.3.0 nâng DriveVault từ kho lưu trữ nhanh thành thư viện cá nhân có tổ chức và có cơ chế chống mất thao tác khi mạng chập chờn.
+V1.4.0 nâng DriveVault từ thư viện dùng nhanh thành kho dữ liệu có tổ chức tốt hơn khi số lượng block tăng lớn: tìm kiếm nâng cao, sort, collection, archive và thao tác hàng loạt.
 
-## Điểm mới
+## Điểm mới V1.4.0
 
-### 1. Tag
-- Mỗi mục có thể gắn nhiều tag, nhập cách nhau bằng dấu phẩy.
-- Tag được hiển thị ngay trên card và trong bottom sheet.
-- Dashboard có bộ lọc theo tag.
-- Tìm kiếm cũng tìm trong tag.
+### 1. Tìm kiếm nâng cao
+- Tìm theo nhiều từ khóa; mọi từ khóa phải xuất hiện trong phạm vi được chọn.
+- Hỗ trợ cụm từ trong dấu ngoặc kép, ví dụ: `"mẫu email"`.
+- Cho phép chọn phạm vi tìm trong: Tên, Nội dung, Link, Tag, Collection.
+- Lọc theo khoảng ngày tạo.
+- Lọc mục có link / không có link.
+- Giữ tương thích với bộ lọc loại, tag, collection và chế độ thư viện.
 
-### 2. Pin
-- Có nút ghim ngay trên card và trong bottom sheet.
-- Mục đã ghim được ưu tiên hiển thị trước ở chế độ mặc định.
-- Có tab **Đã ghim** riêng.
+### 2. Sort
+Có các kiểu sắp xếp:
+- Thông minh (giữ logic Pin + mới nhất; tự ưu tiên Recent/Frequent theo tab).
+- Mới nhất / Cũ nhất.
+- Tên A → Z / Z → A.
+- Dùng gần đây.
+- Dùng nhiều nhất.
 
-### 3. Recent / Frequently Used
-- App ghi nhận số lần sử dụng khi người dùng **Sao chép nội dung** hoặc **Truy cập Drive**.
-- Tab **Gần đây** sắp xếp theo lần sử dụng gần nhất.
-- Tab **Dùng nhiều** sắp xếp theo số lượt sử dụng.
-- Thống kê tổng lượt sử dụng hiển thị trên dashboard.
+### 3. Folder / Collection
+- Mỗi item có thêm `collection`.
+- Khi tạo/sửa có thể chọn collection cũ hoặc nhập collection mới.
+- Dashboard lọc nhanh theo collection.
+- Collection hiển thị ngay trên card và bottom sheet.
+- Bulk Move cho phép chuyển nhiều mục sang collection có sẵn hoặc collection mới.
 
-### 4. Offline Queue
-- Thêm mới, chỉnh sửa, ghim/bỏ ghim và ghi nhận lượt dùng được cập nhật ngay trên UI.
-- Khi mất mạng, thao tác được lưu trong `localStorage` và chuyển sang trạng thái **Chờ đồng bộ**.
-- Khi có mạng lại, app tự đồng bộ hàng đợi lên Google Sheet.
-- Có nút **Đồng bộ ngay** để retry thủ công.
-- Dữ liệu gần nhất cũng được cache local để mở app nhanh hơn.
+> V1.4 dùng mô hình **1 item thuộc 1 collection**. Tag vẫn dùng cho phân loại nhiều chiều.
 
-> Offline queue hoạt động khi app đã được mở/tải trước đó trên thiết bị. V1.3 chưa phải PWA offline hoàn toàn.
+### 4. Archive
+- Mỗi item có trạng thái `archived`.
+- Item archive được ẩn khỏi thư viện chính.
+- Có tab **Lưu trữ** riêng.
+- Trong bottom sheet có nút **Lưu trữ / Khôi phục**.
+- Bulk Archive / Restore hỗ trợ nhiều mục cùng lúc.
 
-### 5. Sync State
-Mỗi card hiển thị một trong các trạng thái:
-- `Đã đồng bộ`
-- `Chờ đồng bộ`
-- `Đang đồng bộ`
-- `Lỗi đồng bộ`
+### 5. Bulk Actions
+Bấm **Chọn nhiều** để bật selection mode:
+- Chọn từng item hoặc Chọn tất cả kết quả đang hiển thị.
+- Ghim.
+- Bỏ ghim.
+- Lưu trữ.
+- Khôi phục.
+- Chuyển collection.
+- Xóa nhiều mục.
 
-Thanh trạng thái phía trên dashboard cho biết thiết bị đang online/offline và số thao tác đang chờ.
+Bulk action được gửi lên Google Apps Script theo **một batch request**, không gọi tuần tự từng item. Các action bulk là idempotent và đi qua Offline Queue nên có thể retry an toàn.
 
-### 6. Undo Delete
-- Swipe trái → Xóa: card biến mất ngay.
-- App cho **5 giây Hoàn tác**.
-- Chỉ sau thời gian này thao tác xóa mới được đưa lên Google Sheet.
-- Nếu xóa một mục vừa tạo nhưng chưa sync, app hủy luôn thao tác tạo thay vì tạo rồi xóa trên server.
+## Giữ nguyên tính năng V1.3
+- Tag / Pin.
+- Recent / Frequently Used.
+- Offline Queue.
+- Sync State.
+- Undo Delete cho thao tác xóa đơn.
+- Dark / Light mode.
+- Swipe trái Sửa / Xóa.
+- Bottom sheet chi tiết khóa scroll background.
+- Optimistic save và cache local.
 
-## Nâng cấp database từ V1.2.0
+## Nâng cấp database từ V1.3.0
 
-V1.3 giữ nguyên Sheet `Vault` và tự mở rộng header từ:
-
-```text
-id | type | name | detail | url | createdAt | updatedAt
-```
-
-thành:
+V1.3:
 
 ```text
 id | type | name | detail | url | createdAt | updatedAt | tags | pinned | useCount | lastUsedAt
 ```
 
-Dữ liệu cũ không bị xóa. Các cột mới mặc định:
-- `tags`: `[]`
-- `pinned`: `false`
-- `useCount`: `0`
-- `lastUsedAt`: trống
+V1.4 tự mở rộng thành:
 
-## Bắt buộc khi nâng cấp từ V1.2.0
+```text
+id | type | name | detail | url | createdAt | updatedAt | tags | pinned | useCount | lastUsedAt | collection | archived
+```
+
+Dữ liệu cũ không bị xóa. Giá trị mặc định:
+- `collection`: `Chưa phân loại`
+- `archived`: `false`
+
+## Bắt buộc khi nâng cấp từ V1.3.0
 
 1. Mở Google Sheet database hiện tại.
 2. Vào **Extensions → Apps Script**.
-3. Thay code cũ bằng toàn bộ file `google-apps-script/Code.gs` của V1.3.0.
+3. Thay toàn bộ code bằng file `google-apps-script/Code.gs` của V1.4.0.
 4. Vào **Deploy → Manage deployments → Edit**.
 5. Chọn **New version → Deploy**.
-6. Giữ nguyên Web App URL nếu URL hiện tại vẫn kết thúc bằng `/exec`.
-7. Đảm bảo `DRIVEVAULT_API_KEY` trong **Script Properties** giống Environment Variable trên Vercel.
-8. Deploy source V1.3.0 lên Vercel.
-9. Mở app và bấm nút Refresh/Sync một lần để backend tự bổ sung header mới.
+6. Giữ nguyên Web App URL `/exec` hiện tại.
+7. Kiểm tra `DRIVEVAULT_API_KEY` trong Script Properties vẫn giống Environment Variable trên Vercel.
+8. Deploy source V1.4.0 lên Vercel.
+9. Mở app và bấm Refresh/Sync một lần. Backend sẽ tự thêm header mới.
 
 ## Environment Variables
 
 ```env
 GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec
-DRIVEVAULT_API_KEY=CHUOI_BI_MAT_GIONG_TRONG_SCRIPT_PROPERTIES
+DRIVEVAULT_API_KEY=YOUR_SECRET_KEY
 ```
 
-## Cấu trúc dữ liệu V1.3
+## Schema V1.4
 
 | Cột | Ý nghĩa |
 |---|---|
@@ -96,13 +108,34 @@ DRIVEVAULT_API_KEY=CHUOI_BI_MAT_GIONG_TRONG_SCRIPT_PROPERTIES
 | `createdAt` | Ngày tạo |
 | `updatedAt` | Ngày cập nhật |
 | `tags` | JSON array tag |
-| `pinned` | Đã ghim hay chưa |
+| `pinned` | Ghim |
 | `useCount` | Số lượt sử dụng |
 | `lastUsedAt` | Lần sử dụng gần nhất |
+| `collection` | Collection chứa item |
+| `archived` | Đã lưu trữ hay chưa |
 
-## Lưu ý về thống kê lượt dùng
+## Roadmap
 
-Để tránh retry làm tăng sai số khi mạng chập chờn, client gửi **mốc useCount hiện tại**, backend lấy giá trị lớn hơn giữa dữ liệu trên Sheet và dữ liệu client. Cơ chế này ưu tiên tính idempotent và phù hợp với app cá nhân/single-user.
+- ✅ **V1.0.0 – Mobile Quick Storage**: lưu Ảnh/Video, Nội dung, Khác; copy nhanh; mở link Drive; mobile-first.
+- ✅ **V1.1.0 – Fast Capture & Mobile UX**: nội dung chi tiết cho media, swipe Sửa/Xóa, bottom sheet, dark/light mode.
+- ✅ **V1.2.0 – Instant Save & Mobile Polish**: optimistic save, retry/idempotency, floating controls, khóa scroll background.
+- ✅ **V1.3.0 – Smart Library & Reliability**: tag, pin, recent/frequent, offline queue, sync state, undo delete.
+- ✅ **V1.4.0 – Search & Organization Pro**: advanced search, sort, collection, archive, bulk actions.
+- ⏭️ **V1.5.0 – Backup & Data Portability**: export/import, backup snapshot, restore, duplicate detection và kiểm tra tính toàn vẹn dữ liệu.
+- 🔜 **V2.0.0 – Google Account & Drive Integration**: đăng nhập Google, Drive Picker / upload trực tiếp và phân tách dữ liệu theo tài khoản nếu cần.
+
+## Phiên bản tiếp theo – V1.5.0
+
+**DriveVault Mobile V1.5.0 – Backup & Data Portability** nên tập trung vào bảo vệ và di chuyển dữ liệu:
+- Export toàn bộ thư viện ra JSON và CSV.
+- Import từ file backup.
+- Preview trước khi import.
+- Merge / Skip / Replace khi trùng ID hoặc nội dung.
+- Backup snapshot có timestamp.
+- Restore snapshot.
+- Kiểm tra link Drive lỗi / trống.
+- Duplicate detector theo tên + nội dung + URL.
+- Báo cáo tổng quan dữ liệu trước/sau restore.
 
 ## Chạy local
 
@@ -113,9 +146,7 @@ npm run dev
 ```
 
 ## Deploy Vercel
-
-Import folder lên Vercel, khai báo 2 Environment Variables rồi Deploy.
+Import project lên Vercel, giữ 2 Environment Variables hiện tại rồi Deploy.
 
 ## Phiên bản
-
-`V1.3.0 – Smart Library & Reliability`
+`V1.4.0 – Search & Organization Pro`

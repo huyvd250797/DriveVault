@@ -49,8 +49,8 @@ async function postAction(action: string, payload: Record<string, unknown>) {
   try {
     return await callAppsScript(body, url);
   } catch (error) {
-    // Create dùng ID do client sinh nên retry an toàn, không tạo trùng bản ghi.
-    if (action !== "create") throw error;
+    // Create và bulk đều idempotent theo ID nên retry an toàn.
+    if (action !== "create" && action !== "bulk") throw error;
     await new Promise((resolve) => setTimeout(resolve, 350));
     return await callAppsScript(body, url, 12000);
   }
@@ -116,6 +116,13 @@ export async function PATCH(request: NextRequest) {
         lastUsedAt: String(body.lastUsedAt || ""),
       }));
     }
+    if (body?.action === "bulk") {
+      return NextResponse.json(await postAction("bulk", {
+        mode: String(body.mode || ""),
+        ids: Array.isArray(body.ids) ? body.ids : [],
+        collection: String(body.collection || ""),
+      }));
+    }
     return NextResponse.json({ ok: false, error: "Action PATCH không hợp lệ." }, { status: 400 });
   } catch (error) {
     const message = error instanceof Error && error.name === "AbortError"
@@ -127,8 +134,8 @@ export async function PATCH(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const { id } = await request.json();
-    return NextResponse.json(await postAction("delete", { id }));
+    const body = await request.json();
+    return NextResponse.json(await postAction("delete", { id: body?.id }));
   } catch (error) {
     const message = error instanceof Error && error.name === "AbortError"
       ? "Google Apps Script phản hồi quá chậm."

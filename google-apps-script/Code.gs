@@ -1,10 +1,10 @@
 /**
- * DriveVault V1.3.0 - Smart Library & Reliability
+ * DriveVault V1.4.0 - Search & Organization Pro
  * Google Sheets backend.
  */
 
 const SHEET_NAME = 'Vault';
-const HEADERS = ['id', 'type', 'name', 'detail', 'url', 'createdAt', 'updatedAt', 'tags', 'pinned', 'useCount', 'lastUsedAt'];
+const HEADERS = ['id', 'type', 'name', 'detail', 'url', 'createdAt', 'updatedAt', 'tags', 'pinned', 'useCount', 'lastUsedAt', 'collection', 'archived'];
 
 function doGet(e) {
   try {
@@ -26,6 +26,7 @@ function doPost(e) {
     if (payload.action === 'update') return json_({ ok: true, item: updateItem_(payload.item || {}) });
     if (payload.action === 'pin') return json_({ ok: true, item: setPinned_(String(payload.id || ''), Boolean(payload.pinned)) });
     if (payload.action === 'use') return json_({ ok: true, item: markUsed_(String(payload.id || ''), Number(payload.useCount || 0), String(payload.lastUsedAt || '')) });
+    if (payload.action === 'bulk') return json_({ ok: true, items: bulkAction_(String(payload.mode || ''), payload.ids || [], String(payload.collection || '')) });
     if (payload.action === 'delete') {
       deleteItem_(String(payload.id || ''));
       return json_({ ok: true, id: String(payload.id || '') });
@@ -51,11 +52,17 @@ function normalizeTags_(value) {
   return tags
     .map(function(tag) { return String(tag || '').trim(); })
     .filter(function(tag) {
-      if (!tag || seen[tag]) return false;
-      seen[tag] = true;
+      const key = tag.toLowerCase();
+      if (!tag || seen[key]) return false;
+      seen[key] = true;
       return true;
     })
     .slice(0, 12);
+}
+
+function normalizeCollection_(value) {
+  const name = String(value || '').trim();
+  return (name || 'Chưa phân loại').slice(0, 80);
 }
 
 function normalizeBasic_(input, requireId) {
@@ -94,13 +101,12 @@ function createItem_(input) {
     tags: normalizeTags_(input.tags),
     pinned: Boolean(input.pinned),
     useCount: Math.max(0, Number(input.useCount || 0)),
-    lastUsedAt: String(input.lastUsedAt || '')
+    lastUsedAt: String(input.lastUsedAt || ''),
+    collection: normalizeCollection_(input.collection),
+    archived: Boolean(input.archived)
   };
 
-  sheet.getRange(sheet.getLastRow() + 1, 1, 1, HEADERS.length).setValues([[
-    item.id, item.type, item.name, item.detail, item.url, item.createdAt, item.updatedAt,
-    JSON.stringify(item.tags), item.pinned, item.useCount, item.lastUsedAt
-  ]]);
+  sheet.getRange(sheet.getLastRow() + 1, 1, 1, HEADERS.length).setValues([itemToRow_(item)]);
   return item;
 }
 
@@ -112,9 +118,6 @@ function updateItem_(input) {
 
   const current = rowToItem_(sheet.getRange(row, 1, 1, HEADERS.length).getValues()[0]);
   const updatedAt = new Date().toISOString();
-  const tags = Array.isArray(input.tags) ? normalizeTags_(input.tags) : current.tags;
-  const pinned = typeof input.pinned === 'boolean' ? input.pinned : current.pinned;
-
   const item = {
     id: clean.id,
     type: clean.type,
@@ -123,16 +126,15 @@ function updateItem_(input) {
     url: clean.url,
     createdAt: current.createdAt || updatedAt,
     updatedAt: updatedAt,
-    tags: tags,
-    pinned: pinned,
+    tags: Array.isArray(input.tags) ? normalizeTags_(input.tags) : current.tags,
+    pinned: typeof input.pinned === 'boolean' ? input.pinned : current.pinned,
     useCount: current.useCount,
-    lastUsedAt: current.lastUsedAt
+    lastUsedAt: current.lastUsedAt,
+    collection: typeof input.collection === 'string' ? normalizeCollection_(input.collection) : current.collection,
+    archived: typeof input.archived === 'boolean' ? input.archived : current.archived
   };
 
-  sheet.getRange(row, 1, 1, HEADERS.length).setValues([[
-    item.id, item.type, item.name, item.detail, item.url, item.createdAt, item.updatedAt,
-    JSON.stringify(item.tags), item.pinned, item.useCount, item.lastUsedAt
-  ]]);
+  sheet.getRange(row, 1, 1, HEADERS.length).setValues([itemToRow_(item)]);
   return item;
 }
 
@@ -142,6 +144,7 @@ function setPinned_(id, pinned) {
   const row = findRowById_(sheet, id);
   if (!row) throw new Error('Không tìm thấy dữ liệu cần ghim.');
   sheet.getRange(row, 9).setValue(Boolean(pinned));
+  sheet.getRange(row, 7).setValue(new Date().toISOString());
   return rowToItem_(sheet.getRange(row, 1, 1, HEADERS.length).getValues()[0]);
 }
 
@@ -158,11 +161,53 @@ function markUsed_(id, requestedUseCount, lastUsedAt) {
   return rowToItem_(sheet.getRange(row, 1, 1, HEADERS.length).getValues()[0]);
 }
 
+function bulkAction_(mode, ids, collection) {
+  const allowed = ['archive', 'restore', 'pin', 'unpin', 'move', 'delete'];
+  if (allowed.indexOf(mode) === -1) throw new Error('Bulk action không hợp lệ.');
+  const cleanIds = Array.from(new Set((Array.isArray(ids) ? ids : []).map(function(id) { return String(id || '').trim(); }).filter(Boolean))).slice(0, 250);
+  if (!cleanIds.length) return [];
+
+  const sheet = getSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return [];
+  const values = sheet.getRange(2, 1, lastRow - 1, HEADERS.length).getValues();
+  const idSet = {};
+  cleanIds.forEach(function(id) { idSet[id] = true; });
+
+  if (mode === 'delete') {
+    const rowsToDelete = [];
+    values.forEach(function(row, index) {
+      if (idSet[String(row[0] || '')]) rowsToDelete.push(index + 2);
+    });
+    rowsToDelete.sort(function(a, b) { return b - a; }).forEach(function(row) { sheet.deleteRow(row); });
+    return [];
+  }
+
+  const nextCollection = normalizeCollection_(collection);
+  const now = new Date().toISOString();
+  const changed = [];
+  values.forEach(function(row, index) {
+    const id = String(row[0] || '');
+    if (!idSet[id]) return;
+    if (mode === 'archive') row[12] = true;
+    if (mode === 'restore') row[12] = false;
+    if (mode === 'pin') row[8] = true;
+    if (mode === 'unpin') row[8] = false;
+    if (mode === 'move') row[11] = nextCollection;
+    row[6] = now;
+    values[index] = row;
+    changed.push(rowToItem_(row));
+  });
+
+  if (values.length) sheet.getRange(2, 1, values.length, HEADERS.length).setValues(values);
+  return changed;
+}
+
 function deleteItem_(id) {
   if (!id) throw new Error('Thiếu ID dữ liệu cần xóa.');
   const sheet = getSheet_();
   const row = findRowById_(sheet, id);
-  if (!row) return; // Idempotent: retry/delete mục chưa từng sync vẫn được xem là thành công.
+  if (!row) return;
   sheet.deleteRow(row);
 }
 
@@ -171,6 +216,14 @@ function findRowById_(sheet, id) {
   if (lastRow <= 1) return 0;
   const finder = sheet.getRange(2, 1, lastRow - 1, 1).createTextFinder(id).matchEntireCell(true).findNext();
   return finder ? finder.getRow() : 0;
+}
+
+function itemToRow_(item) {
+  return [
+    item.id, item.type, item.name, item.detail, item.url, item.createdAt, item.updatedAt,
+    JSON.stringify(item.tags || []), Boolean(item.pinned), Math.max(0, Number(item.useCount || 0)),
+    item.lastUsedAt || '', normalizeCollection_(item.collection), Boolean(item.archived)
+  ];
 }
 
 function rowToItem_(row) {
@@ -188,7 +241,9 @@ function rowToItem_(row) {
     tags: normalizeTags_(row[7]),
     pinned: row[8] === true || String(row[8]).toLowerCase() === 'true',
     useCount: Math.max(0, Number(row[9] || 0)),
-    lastUsedAt: lastUsedAt
+    lastUsedAt: lastUsedAt,
+    collection: normalizeCollection_(row[11]),
+    archived: row[12] === true || String(row[12]).toLowerCase() === 'true'
   };
 }
 
@@ -201,6 +256,7 @@ function listItems_() {
     .filter(function(row) { return row[0]; })
     .map(rowToItem_)
     .sort(function(a, b) {
+      if (a.archived !== b.archived) return a.archived ? 1 : -1;
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
       return String(b.createdAt).localeCompare(String(a.createdAt));
     });
@@ -216,7 +272,7 @@ function getSheet_() {
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
     sheet.setFrozenRows(1);
   } else {
-    // V1.3 tự mở rộng schema cũ V1.2, không xóa dữ liệu hiện có.
+    // V1.4 tự mở rộng schema V1.3, không xóa dữ liệu cũ.
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
   }
   return sheet;

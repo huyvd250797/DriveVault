@@ -13,6 +13,8 @@ export interface VaultItem {
   pinned: boolean;
   useCount: number;
   lastUsedAt: string;
+  collection: string;
+  archived: boolean;
   syncState?: SyncState;
 }
 
@@ -23,4 +25,6 @@ export interface CreateVaultItem {
   url?: string;
   tags?: string[];
   pinned?: boolean;
+  collection?: string;
+  archived?: boolean;
 }
