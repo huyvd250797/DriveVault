@@ -15,6 +15,8 @@ export interface VaultItem {
   lastUsedAt: string;
   collection: string;
   archived: boolean;
+  deleted: boolean;
+  deletedAt: string;
   syncState?: SyncState;
 }
 
@@ -27,4 +29,21 @@ export interface CreateVaultItem {
   pinned?: boolean;
   collection?: string;
   archived?: boolean;
+  deleted?: boolean;
+  deletedAt?: string;
+}
+
+export interface BackupSnapshot {
+  id: string;
+  createdAt: string;
+  itemCount: number;
+  note: string;
+}
+
+export interface ImportReport {
+  received: number;
+  added: number;
+  updated: number;
+  skipped: number;
+  total: number;
 }

@@ -13,6 +13,8 @@ import {
   Clipboard,
   Cloud,
   CloudOff,
+  Database,
+  Download,
   ExternalLink,
   FileText,
   Folder,
@@ -31,17 +33,20 @@ import {
   Square,
   Star,
   Sun,
+  Upload,
+  History,
+  Link2,
   Trash2,
   Undo2,
   WifiOff,
   X,
 } from "lucide-react";
-import type { CreateVaultItem, StorageType, SyncState, VaultItem } from "@/lib/types";
+import type { BackupSnapshot, CreateVaultItem, ImportReport, StorageType, SyncState, VaultItem } from "@/lib/types";
 
-const CACHE_KEY = "drivevault-v140-items";
-const QUEUE_KEY = "drivevault-v140-sync-queue";
-const LEGACY_CACHE_KEY = "drivevault-v130-items";
-const LEGACY_QUEUE_KEY = "drivevault-v130-sync-queue";
+const CACHE_KEY = "drivevault-v160-items";
+const QUEUE_KEY = "drivevault-v160-sync-queue";
+const LEGACY_CACHE_KEY = "drivevault-v150-items";
+const LEGACY_QUEUE_KEY = "drivevault-v150-sync-queue";
 const DELETE_UNDO_MS = 5000;
 
 const typeMeta: Record<StorageType, { label: string; icon: typeof ImageIcon; className: string }> = {
@@ -50,10 +55,10 @@ const typeMeta: Record<StorageType, { label: string; icon: typeof ImageIcon; cla
   other: { label: "Khác", icon: Layers3, className: "badge-other" },
 };
 
-type LibraryMode = "all" | "pinned" | "recent" | "frequent" | "archive";
+type LibraryMode = "all" | "pinned" | "recent" | "frequent" | "archive" | "trash";
 type SortMode = "smart" | "newest" | "oldest" | "name-az" | "name-za" | "recent" | "frequent";
 type SearchField = "name" | "detail" | "url" | "tags" | "collection";
-type BulkMode = "archive" | "restore" | "pin" | "unpin" | "move" | "delete";
+type BulkMode = "archive" | "restore" | "pin" | "unpin" | "move" | "delete" | "restoreTrash" | "purge";
 type LinkFilter = "all" | "with" | "without";
 
 type QueueOperation = {
@@ -162,6 +167,8 @@ function withDefaults(item: Partial<VaultItem>): VaultItem {
     lastUsedAt: String(item.lastUsedAt || ""),
     collection: normalizeCollection(item.collection),
     archived: Boolean(item.archived),
+    deleted: Boolean(item.deleted),
+    deletedAt: String(item.deletedAt || ""),
     syncState: item.syncState || "synced",
   };
 }
@@ -188,7 +195,7 @@ function readQueue(): QueueOperation[] {
 
 function applyBulkToMap(map: Map<string, VaultItem>, op: QueueOperation, state: SyncState) {
   const ids = op.targetIds || [];
-  if (op.bulkMode === "delete") {
+  if (op.bulkMode === "purge") {
     ids.forEach((id) => map.delete(id));
     return;
   }
@@ -201,6 +208,8 @@ function applyBulkToMap(map: Map<string, VaultItem>, op: QueueOperation, state: 
     if (op.bulkMode === "pin") next.pinned = true;
     if (op.bulkMode === "unpin") next.pinned = false;
     if (op.bulkMode === "move") next.collection = normalizeCollection(op.collection);
+    if (op.bulkMode === "delete") { next.deleted = true; next.deletedAt = new Date().toISOString(); next.archived = false; }
+    if (op.bulkMode === "restoreTrash") { next.deleted = false; next.deletedAt = ""; }
     map.set(id, next);
   });
 }
@@ -218,7 +227,8 @@ function applyQueueToItems(remoteItems: VaultItem[], queue: QueueOperation[]) {
       continue;
     }
     if (op.type === "delete") {
-      map.delete(op.targetId);
+      const current = map.get(op.targetId);
+      if (current) map.set(op.targetId, { ...current, deleted: true, deletedAt: current.deletedAt || new Date().toISOString(), archived: false, syncState: state });
       continue;
     }
     const current = map.get(op.targetId);
@@ -242,6 +252,115 @@ function parseSearchTerms(query: string) {
   return terms;
 }
 
+
+function exportableItem(item: VaultItem) {
+  const { syncState: _syncState, ...clean } = item;
+  return clean;
+}
+
+function downloadTextFile(filename: string, content: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 500);
+}
+
+function csvCell(value: unknown) {
+  const text = Array.isArray(value) ? value.join(" | ") : String(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function itemsToCsv(items: VaultItem[]) {
+  const headers = ["id","type","name","detail","url","createdAt","updatedAt","tags","pinned","useCount","lastUsedAt","collection","archived","deleted","deletedAt"];
+  const rows = items.map((item) => headers.map((key) => csvCell((exportableItem(item) as Record<string, unknown>)[key])).join(","));
+  return `\uFEFF${headers.join(",")}\n${rows.join("\n")}`;
+}
+
+function normalizedDuplicateKey(item: VaultItem) {
+  const url = item.url.trim().toLowerCase();
+  if (url) return `url:${url}`;
+  const text = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ");
+  return `text:${text(item.name)}|${text(item.detail)}`;
+}
+
+type LinkIntel = {
+  kind: "none" | "drive-file" | "drive-folder" | "youtube" | "direct-image" | "web" | "invalid";
+  provider: string;
+  label: string;
+  fileId?: string;
+  thumbnailUrl?: string;
+  embedUrl?: string;
+};
+
+function analyzeLink(value: string): LinkIntel {
+  if (!value.trim()) return { kind: "none", provider: "", label: "Không có link" };
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") return { kind: "invalid", provider: "", label: "Link không hợp lệ" };
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    const path = url.pathname;
+
+    if (host === "drive.google.com" || host === "docs.google.com") {
+      const folderMatch = path.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+      if (folderMatch) return { kind: "drive-folder", provider: "Google Drive", label: "Thư mục Drive", fileId: folderMatch[1] };
+      const fileMatch = path.match(/\/(?:file\/d|document\/d|spreadsheets\/d|presentation\/d)\/([a-zA-Z0-9_-]+)/);
+      const id = fileMatch?.[1] || url.searchParams.get("id") || undefined;
+      if (id) return {
+        kind: "drive-file",
+        provider: "Google Drive",
+        label: "Tệp Google Drive",
+        fileId: id,
+        thumbnailUrl: `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w1200`,
+        embedUrl: `https://drive.google.com/file/d/${encodeURIComponent(id)}/preview`,
+      };
+      return { kind: "web", provider: "Google Drive", label: "Liên kết Drive" };
+    }
+
+    if (host === "youtu.be" || host === "youtube.com" || host === "m.youtube.com") {
+      const id = host === "youtu.be" ? path.split("/").filter(Boolean)[0] : (url.searchParams.get("v") || path.match(/\/(?:shorts|embed)\/([^/?]+)/)?.[1]);
+      if (id) return {
+        kind: "youtube", provider: "YouTube", label: "Video YouTube", fileId: id,
+        thumbnailUrl: `https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg`,
+        embedUrl: `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}`,
+      };
+    }
+
+    if (/\.(?:png|jpe?g|gif|webp|avif)(?:$|\?)/i.test(url.href)) return { kind: "direct-image", provider: host, label: "Ảnh trực tiếp", thumbnailUrl: url.href };
+    return { kind: "web", provider: host, label: "Liên kết web" };
+  } catch {
+    return { kind: "invalid", provider: "", label: "Link không hợp lệ" };
+  }
+}
+
+function isSuspiciousDriveLink(item: VaultItem) {
+  if (!item.url) return false;
+  const intel = analyzeLink(item.url);
+  return intel.kind === "invalid" || (item.type === "media" && intel.kind === "web");
+}
+
+function MediaThumbnail({ url }: { url: string }) {
+  const [failed, setFailed] = useState(false);
+  const intel = analyzeLink(url);
+  if (!intel.thumbnailUrl || failed) return null;
+  return <div className="media-thumbnail"><img src={intel.thumbnailUrl} alt="" loading="lazy" onError={() => setFailed(true)} /></div>;
+}
+
+function MediaDetailPreview({ url }: { url: string }) {
+  const [failed, setFailed] = useState(false);
+  const intel = analyzeLink(url);
+  if (!url) return null;
+  if (intel.embedUrl && !failed) {
+    return <div className="media-preview-frame"><iframe src={intel.embedUrl} title="Xem trước media" loading="lazy" allow="autoplay; encrypted-media; picture-in-picture" onError={() => setFailed(true)} /></div>;
+  }
+  if (intel.thumbnailUrl && !failed) return <div className="media-preview-image"><img src={intel.thumbnailUrl} alt="Xem trước media" onError={() => setFailed(true)} /></div>;
+  return null;
+}
+
 function SyncBadge({ state }: { state?: SyncState }) {
   if (state === "pending") return <span className="sync-badge pending"><CloudOff size={12} /> Chờ đồng bộ</span>;
   if (state === "syncing") return <span className="sync-badge syncing"><Loader2 className="spin" size={12} /> Đang đồng bộ</span>;
@@ -260,6 +379,7 @@ function SwipeCard({
   selectionMode,
   checked,
   onSelect,
+  trashed,
 }: {
   item: VaultItem;
   onOpen: () => void;
@@ -271,6 +391,7 @@ function SwipeCard({
   selectionMode: boolean;
   checked: boolean;
   onSelect: () => void;
+  trashed?: boolean;
 }) {
   const [offset, setOffset] = useState(0);
   const startX = useRef<number | null>(null);
@@ -278,6 +399,7 @@ function SwipeCard({
   const moved = useRef(false);
   const meta = typeMeta[item.type] || typeMeta.other;
   const Icon = meta.icon;
+  const intel = analyzeLink(item.url);
   const actionsVisible = !selectionMode && offset < -2;
 
   useEffect(() => { if (selectionMode) setOffset(0); }, [selectionMode]);
@@ -306,16 +428,16 @@ function SwipeCard({
   return (
     <div className={`swipe-row ${checked ? "selected-row" : ""}`}>
       <div className={`swipe-actions ${actionsVisible ? "visible" : ""}`} aria-hidden={!actionsVisible}>
-        <button className="swipe-edit" tabIndex={actionsVisible ? 0 : -1} aria-label={`Sửa ${item.name}`} onClick={() => { setOffset(0); onEdit(); }}>
-          <Pencil size={19} /><span>Sửa</span>
+        <button className="swipe-edit" tabIndex={actionsVisible ? 0 : -1} aria-label={trashed ? `Khôi phục ${item.name}` : `Sửa ${item.name}`} onClick={() => { setOffset(0); onEdit(); }}>
+          {trashed ? <ArchiveRestore size={19} /> : <Pencil size={19} />}<span>{trashed ? "Khôi phục" : "Sửa"}</span>
         </button>
-        <button className="swipe-delete" tabIndex={actionsVisible ? 0 : -1} aria-label={`Xóa ${item.name}`} onClick={() => { setOffset(0); onDelete(); }}>
-          <Trash2 size={19} /><span>Xóa</span>
+        <button className="swipe-delete" tabIndex={actionsVisible ? 0 : -1} aria-label={trashed ? `Xóa vĩnh viễn ${item.name}` : `Xóa ${item.name}`} onClick={() => { setOffset(0); onDelete(); }}>
+          <Trash2 size={19} /><span>{trashed ? "Xóa hẳn" : "Xóa"}</span>
         </button>
       </div>
 
       <article
-        className={`card swipe-card ${item.pinned ? "is-pinned" : ""} ${item.archived ? "is-archived" : ""}`}
+        className={`card swipe-card ${item.pinned ? "is-pinned" : ""} ${item.archived ? "is-archived" : ""} ${item.deleted ? "is-deleted" : ""}`}
         style={{ transform: `translateX(${offset}px)` }}
         onPointerDown={pointerDown}
         onPointerMove={pointerMove}
@@ -337,20 +459,22 @@ function SwipeCard({
           <div className="card-head-left">
             <span className={`badge ${meta.className}`}><Icon size={14} />{meta.label}</span>
             {item.pinned && <span className="pin-label"><Pin size={12} /> Ghim</span>}
-            {item.archived && <span className="archive-label"><Archive size={12} /> Lưu trữ</span>}
+            {item.archived && <span className="archive-label"><Archive size={12} /> Lưu trữ</span>}{item.deleted && <span className="trash-label"><Trash2 size={12} /> Thùng rác</span>}
           </div>
-          {!selectionMode && <button className={`pin-button ${item.pinned ? "active" : ""}`} onClick={(e) => { e.stopPropagation(); onTogglePin(); }} aria-label={item.pinned ? "Bỏ ghim" : "Ghim mục này"}>{item.pinned ? <PinOff size={17} /> : <Pin size={17} />}</button>}
+          {!selectionMode && !item.deleted && <button className={`pin-button ${item.pinned ? "active" : ""}`} onClick={(e) => { e.stopPropagation(); onTogglePin(); }} aria-label={item.pinned ? "Bỏ ghim" : "Ghim mục này"}>{item.pinned ? <PinOff size={17} /> : <Pin size={17} />}</button>}
         </div>
 
         <div className="card-title-row">
           <div>
             <h2>{item.name}</h2>
-            <div className="card-meta"><time>{formatDate(item.createdAt)}</time>{item.useCount > 0 && <span>· dùng {item.useCount} lần</span>}</div>
+            {item.useCount > 0 && <div className="card-meta"><span>Đã dùng {item.useCount} lần</span></div>}
           </div>
           {!selectionMode && <ChevronRight className="card-chevron" size={19} />}
         </div>
 
         <div className="collection-label"><Folder size={13} /> {item.collection}</div>
+        {item.type === "media" && item.url && <MediaThumbnail url={item.url} />}
+        {item.url && <div className={`link-intel-row ${intel.kind === "invalid" ? "invalid" : ""}`}><Link2 size={12}/><span>{intel.label}</span>{intel.provider && <small>{intel.provider}</small>}</div>}
         {item.detail && <p className="detail">{item.detail}</p>}
         {item.tags.length > 0 && <div className="tag-row">{item.tags.slice(0, 3).map((tag) => <span className="tag" key={tag}>#{tag}</span>)}{item.tags.length > 3 && <span className="tag more">+{item.tags.length - 3}</span>}</div>}
 
@@ -359,7 +483,7 @@ function SwipeCard({
           {item.lastUsedAt && <span className="last-used">{formatRelative(item.lastUsedAt)}</span>}
         </div>
 
-        {!selectionMode && <div className="actions" onClick={(e) => e.stopPropagation()}>
+        {!selectionMode && !item.deleted && <div className="actions" onClick={(e) => e.stopPropagation()}>
           {item.detail && <button className="secondary" onClick={onCopy}><Clipboard size={17} /> Sao chép</button>}
           {item.url && <a className="primary" href={item.url} target="_blank" rel="noreferrer" onClick={onOpenUrl}><ExternalLink size={17} /> Truy cập</a>}
         </div>}
@@ -400,6 +524,18 @@ export default function DriveVaultApp() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkCollection, setBulkCollection] = useState("Chưa phân loại");
+  const [showDataTools, setShowDataTools] = useState(false);
+  const [backups, setBackups] = useState<BackupSnapshot[]>([]);
+  const [dataBusy, setDataBusy] = useState(false);
+  const [backupNote, setBackupNote] = useState("");
+  const [importItems, setImportItems] = useState<VaultItem[]>([]);
+  const [importFileName, setImportFileName] = useState("");
+  const [importMode, setImportMode] = useState<"skip" | "merge" | "replace">("skip");
+  const [importReport, setImportReport] = useState<ImportReport | null>(null);
+  const [classifications, setClassifications] = useState<string[]>([]);
+  const [newClassification, setNewClassification] = useState("");
+  const [classificationBusy, setClassificationBusy] = useState(false);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const scrollIdleTimer = useRef<number | null>(null);
   const toastTimer = useRef<number | null>(null);
@@ -485,6 +621,8 @@ export default function DriveVaultApp() {
                   ? { ...serverItem, pinned: item.pinned, useCount: item.useCount, lastUsedAt: item.lastUsedAt, collection: item.collection, archived: item.archived, syncState: "pending" }
                   : { ...serverItem, syncState: "synced" };
               }));
+            } else if (op.type === "delete" && data.item) {
+              setItems((current) => current.map((item) => item.id === op.targetId ? { ...withDefaults(data.item), syncState: stillPending ? "pending" : "synced" } : item));
             } else {
               setItems((current) => current.map((item) => item.id === op.targetId ? { ...item, syncState: stillPending ? "pending" : "synced" } : item));
             }
@@ -512,7 +650,7 @@ export default function DriveVaultApp() {
     setPendingCount(queueRef.current.length);
     const cached = readLocalItems();
     if (cached.length) setItems(applyQueueToItems(cached, queueRef.current));
-    // Migrate cache/queue V1.3 sang namespace V1.4 trước khi xóa key cũ.
+    // Migrate cache/queue V1.5 sang namespace V1.6 trước khi xóa key cũ.
     window.localStorage.setItem(QUEUE_KEY, JSON.stringify(queueRef.current));
     if (cached.length) window.localStorage.setItem(CACHE_KEY, JSON.stringify(cached));
     setOnline(navigator.onLine);
@@ -547,6 +685,7 @@ export default function DriveVaultApp() {
     window.localStorage.setItem("drivevault-theme", theme);
   }, [theme]);
 
+
   useEffect(() => {
     const onScroll = () => {
       setShowScrollTop(window.scrollY > 180);
@@ -560,7 +699,7 @@ export default function DriveVaultApp() {
   }, []);
 
   useEffect(() => {
-    if (!showForm && !selected) return;
+    if (!showForm && !selected && !showDataTools && !advancedOpen) return;
     const scrollY = window.scrollY;
     const body = document.body;
     const previous = { position: body.style.position, top: body.style.top, left: body.style.left, right: body.style.right, width: body.style.width, overflow: body.style.overflow };
@@ -571,17 +710,42 @@ export default function DriveVaultApp() {
     body.style.width = "100%";
     body.style.overflow = "hidden";
     return () => { Object.assign(body.style, previous); window.scrollTo(0, scrollY); };
-  }, [showForm, selected]);
+  }, [showForm, selected, showDataTools, advancedOpen]);
 
-  const allTags = useMemo(() => Array.from(new Set(items.flatMap((item) => item.tags))).sort((a, b) => a.localeCompare(b, "vi")), [items]);
-  const collections = useMemo(() => Array.from(new Set(items.map((item) => normalizeCollection(item.collection)))).sort((a, b) => a.localeCompare(b, "vi")), [items]);
+  const liveItems = useMemo(() => items.filter((item) => !item.deleted), [items]);
+  const allTags = useMemo(() => Array.from(new Set(liveItems.flatMap((item) => item.tags))).sort((a, b) => a.localeCompare(b, "vi")), [liveItems]);
+  const collections = useMemo(() => {
+    const values = new Set<string>();
+    classifications.forEach((name) => { if (name.trim()) values.add(name.trim()); });
+    liveItems.forEach((item) => {
+      const name = normalizeCollection(item.collection);
+      if (name && name !== "Chưa phân loại") values.add(name);
+    });
+    return Array.from(values).sort((a, b) => a.localeCompare(b, "vi"));
+  }, [liveItems, classifications]);
+  const duplicateCount = useMemo(() => {
+    const seen = new Set<string>();
+    let duplicates = 0;
+    for (const item of items.filter((x) => !x.deleted)) {
+      const key = normalizedDuplicateKey(item);
+      if (seen.has(key)) duplicates += 1; else seen.add(key);
+    }
+    return duplicates;
+  }, [items]);
+  const suspiciousLinks = useMemo(() => items.filter((item) => !item.deleted && isSuspiciousDriveLink(item)), [items]);
+  const trashCount = useMemo(() => items.filter((item) => item.deleted).length, [items]);
 
   const filtered = useMemo(() => {
     const terms = parseSearchTerms(search);
     const result = items.filter((item) => {
-      if (libraryMode === "archive") {
-        if (!item.archived) return false;
-      } else if (item.archived) return false;
+      if (libraryMode === "trash") {
+        if (!item.deleted) return false;
+      } else {
+        if (item.deleted) return false;
+        if (libraryMode === "archive") {
+          if (!item.archived) return false;
+        } else if (item.archived) return false;
+      }
       if (typeFilter !== "all" && item.type !== typeFilter) return false;
       if (libraryMode === "pinned" && !item.pinned) return false;
       if (selectedTag !== "all" && !item.tags.includes(selectedTag)) return false;
@@ -656,7 +820,7 @@ export default function DriveVaultApp() {
     if (!editingId) {
       const optimisticItem: VaultItem = {
         id: createClientId(), type: form.type, name, detail, url, tags, collection,
-        pinned: Boolean(form.pinned), archived: false, useCount: 0, lastUsedAt: "",
+        pinned: Boolean(form.pinned), archived: false, deleted: false, deletedAt: "", useCount: 0, lastUsedAt: "",
         createdAt: now, updatedAt: now, syncState: "pending",
       };
       setItems((current) => [optimisticItem, ...current]);
@@ -703,9 +867,10 @@ export default function DriveVaultApp() {
   function deleteItem(item: VaultItem) {
     const previousOps = queueRef.current.filter((op) => op.targetId === item.id || op.targetIds?.includes(item.id));
     const keepOther = queueRef.current.filter((op) => op.targetId !== item.id && !op.targetIds?.includes(item.id));
+    const now = new Date().toISOString();
     const deleteOp: QueueOperation = { opId: createClientId(), type: "delete", targetId: item.id, notBefore: Date.now() + DELETE_UNDO_MS };
     writeQueue([...keepOther, deleteOp]);
-    setItems((current) => current.filter((x) => x.id !== item.id));
+    setItems((current) => current.map((x) => x.id === item.id ? { ...x, deleted: true, deletedAt: now, archived: false, syncState: "pending" } : x));
     if (selectedId === item.id) setSelectedId(null);
     setUndoDelete({ item, previousOps });
     window.setTimeout(() => { setUndoDelete((current) => current?.item.id === item.id ? null : current); void flushQueue(); }, DELETE_UNDO_MS + 120);
@@ -716,10 +881,21 @@ export default function DriveVaultApp() {
     const targetId = undoDelete.item.id;
     const withoutDelete = queueRef.current.filter((op) => !(op.targetId === targetId && op.type === "delete"));
     writeQueue([...withoutDelete, ...undoDelete.previousOps]);
-    setItems((current) => [{ ...undoDelete.item, syncState: undoDelete.previousOps.length ? "pending" : "synced" }, ...current.filter((x) => x.id !== targetId)]);
+    setItems((current) => current.map((x) => x.id === targetId ? { ...undoDelete.item, deleted: false, deletedAt: "", syncState: undoDelete.previousOps.length ? "pending" : "synced" } : x));
     setUndoDelete(null);
-    notify("Đã hoàn tác xóa");
+    notify("Đã hoàn tác · mục đã trở lại thư viện");
     void flushQueue();
+  }
+
+  function restoreTrashItem(item: VaultItem) {
+    applyBulkAction("restoreTrash", [item.id]);
+    setSelectedId(null);
+  }
+
+  function purgeItem(item: VaultItem) {
+    if (!window.confirm(`Xóa vĩnh viễn “${item.name}”? Thao tác này không thể hoàn tác.`)) return;
+    applyBulkAction("purge", [item.id]);
+    setSelectedId(null);
   }
 
   function archiveItem(item: VaultItem) {
@@ -739,9 +915,9 @@ export default function DriveVaultApp() {
 
   function applyBulkAction(mode: BulkMode, ids = Array.from(selectedIds), collection = bulkCollection) {
     if (!ids.length) return;
-    if (mode === "delete" && !window.confirm(`Xóa ${ids.length} mục đã chọn? Thao tác hàng loạt này không có Hoàn tác.`)) return;
+    if (mode === "purge" && !window.confirm(`Xóa vĩnh viễn ${ids.length} mục? Thao tác này không thể hoàn tác.`)) return;
     const normalizedCollection = normalizeCollection(collection);
-    if (mode === "delete") {
+    if (mode === "purge") {
       setItems((current) => current.filter((item) => !ids.includes(item.id)));
     } else {
       setItems((current) => current.map((item) => {
@@ -752,11 +928,13 @@ export default function DriveVaultApp() {
         if (mode === "pin") next.pinned = true;
         if (mode === "unpin") next.pinned = false;
         if (mode === "move") next.collection = normalizedCollection;
+        if (mode === "delete") { next.deleted = true; next.deletedAt = new Date().toISOString(); next.archived = false; }
+        if (mode === "restoreTrash") { next.deleted = false; next.deletedAt = ""; }
         return next;
       }));
     }
     enqueue({ opId: createClientId(), type: "bulk", targetId: `bulk-${Date.now()}`, targetIds: ids, bulkMode: mode, collection: normalizedCollection });
-    const labels: Record<BulkMode, string> = { archive: "Đã lưu trữ", restore: "Đã khôi phục", pin: "Đã ghim", unpin: "Đã bỏ ghim", move: `Đã chuyển vào ${normalizedCollection}`, delete: "Đã xóa" };
+    const labels: Record<BulkMode, string> = { archive: "Đã lưu trữ", restore: "Đã khôi phục", pin: "Đã ghim", unpin: "Đã bỏ ghim", move: `Đã chuyển vào ${normalizedCollection}`, delete: "Đã chuyển vào thùng rác", restoreTrash: "Đã khôi phục từ thùng rác", purge: "Đã xóa vĩnh viễn" };
     notify(`${labels[mode]} ${ids.length} mục`);
     exitSelection();
   }
@@ -770,25 +948,235 @@ export default function DriveVaultApp() {
     notify(queueRef.current.length ? "Vẫn còn mục chờ đồng bộ" : "Đã đồng bộ xong");
   }
 
+  async function loadBackups() {
+    if (!online) return;
+    try {
+      const response = await fetch("/api/data", { cache: "no-store" });
+      const data = await readJsonResponse(response);
+      if (!response.ok || !data.ok) throw new Error(data.error || "Không tải được backup.");
+      setBackups(Array.isArray(data.backups) ? data.backups : []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Không tải được lịch sử backup.");
+    }
+  }
+
+  const loadClassifications = useCallback(async () => {
+    try {
+      const response = await fetch("/api/classifications", { cache: "no-store" });
+      const data = await readJsonResponse(response);
+      if (!response.ok || !data.ok) throw new Error(data.error || "Không tải được phân loại.");
+      setClassifications(Array.isArray(data.classifications) ? data.classifications.map(String) : []);
+    } catch (e) {
+      if (online) setError(e instanceof Error ? e.message : "Không tải được phân loại.");
+    }
+  }, [online]);
+
+  async function createClassification() {
+    const name = newClassification.trim().replace(/\s+/g, " ").slice(0, 80);
+    if (!name) return notify("Nhập tên phân loại trước");
+    if (!online) return notify("Cần kết nối mạng để tạo phân loại mới");
+    setClassificationBusy(true);
+    try {
+      const response = await fetch("/api/classifications", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
+      const data = await readJsonResponse(response);
+      if (!response.ok || !data.ok) throw new Error(data.error || "Không tạo được phân loại.");
+      const saved = String(data.classification || name);
+      setClassifications((current) => Array.from(new Set([...current, saved])).sort((a, b) => a.localeCompare(b, "vi")));
+      setSelectedCollection(saved);
+      setNewClassification("");
+      notify(`Đã tạo phân loại ${saved}`);
+    } catch (e) { setError(e instanceof Error ? e.message : "Không tạo được phân loại."); }
+    finally { setClassificationBusy(false); }
+  }
+
+  useEffect(() => { void loadClassifications(); }, [loadClassifications]);
+
+  function openDataTools() {
+    setShowDataTools(true);
+    setImportReport(null);
+    setError("");
+    void loadBackups();
+  }
+
+  function exportJson() {
+    const payload = {
+      app: "DriveVault",
+      version: "1.6.0",
+      exportedAt: new Date().toISOString(),
+      itemCount: items.length,
+      items: items.map(exportableItem),
+    };
+    downloadTextFile(`drivevault-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
+    notify("Đã xuất JSON");
+  }
+
+  function exportCsv() {
+    downloadTextFile(`drivevault-export-${new Date().toISOString().slice(0, 10)}.csv`, itemsToCsv(items), "text/csv;charset=utf-8");
+    notify("Đã xuất CSV");
+  }
+
+  async function createBackupSnapshot() {
+    if (!online) return notify("Cần kết nối mạng để tạo snapshot");
+    if (pendingCount) return notify("Hãy đồng bộ hết thao tác đang chờ trước khi backup");
+    setDataBusy(true);
+    try {
+      const response = await fetch("/api/data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "backup", note: backupNote.trim() }) });
+      const data = await readJsonResponse(response);
+      if (!response.ok || !data.ok) throw new Error(data.error || "Không tạo được backup.");
+      setBackupNote("");
+      await loadBackups();
+      notify("Đã tạo Backup Snapshot");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Không tạo được backup.");
+    } finally { setDataBusy(false); }
+  }
+
+  async function restoreSnapshot(snapshot: BackupSnapshot) {
+    if (!online) return notify("Cần kết nối mạng để restore");
+    if (pendingCount) return notify("Hãy đồng bộ hết thao tác đang chờ trước khi restore");
+    if (!window.confirm(`Khôi phục snapshot ${formatDate(snapshot.createdAt)} (${snapshot.itemCount} mục)? Hệ thống sẽ tự backup dữ liệu hiện tại trước khi restore.`)) return;
+    setDataBusy(true);
+    try {
+      const response = await fetch("/api/data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "restoreBackup", backupId: snapshot.id }) });
+      const data = await readJsonResponse(response);
+      if (!response.ok || !data.ok) throw new Error(data.error || "Restore thất bại.");
+      writeQueue([]);
+      await loadItems(true);
+      await loadBackups();
+      notify(`Đã restore ${Number(data.report?.restored || snapshot.itemCount)} mục`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Restore thất bại.");
+    } finally { setDataBusy(false); }
+  }
+
+  async function removeSnapshot(snapshot: BackupSnapshot) {
+    if (!online) return notify("Cần kết nối mạng");
+    if (!window.confirm("Xóa snapshot backup này?")) return;
+    setDataBusy(true);
+    try {
+      const response = await fetch("/api/data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "deleteBackup", backupId: snapshot.id }) });
+      const data = await readJsonResponse(response);
+      if (!response.ok || !data.ok) throw new Error(data.error || "Không xóa được snapshot.");
+      await loadBackups();
+      notify("Đã xóa snapshot");
+    } catch (e) { setError(e instanceof Error ? e.message : "Không xóa được snapshot."); }
+    finally { setDataBusy(false); }
+  }
+
+  async function handleImportFile(file?: File) {
+    if (!file) return;
+    setImportReport(null);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const rawItems = Array.isArray(parsed) ? parsed : parsed?.items;
+      if (!Array.isArray(rawItems)) throw new Error("File JSON không có mảng items hợp lệ.");
+      const valid = rawItems
+        .filter((item: any) => {
+          if (!item || !["media", "content", "other"].includes(String(item.type || "")) || !String(item.name || "").trim()) return false;
+          if (item.type === "media" && !normalizeUrl(String(item.url || ""))) return false;
+          if (item.type === "content" && !String(item.detail || "").trim()) return false;
+          if (item.type === "other" && !String(item.detail || "").trim() && !normalizeUrl(String(item.url || ""))) return false;
+          return true;
+        })
+        .map((item: any) => withDefaults({ ...item, url: item.url ? normalizeUrl(String(item.url)) : "", syncState: "synced" }));
+      if (!valid.length) throw new Error("Không tìm thấy bản ghi DriveVault hợp lệ trong file.");
+      setImportItems(valid);
+      setImportFileName(file.name);
+      notify(`Đã đọc ${valid.length} mục từ file`);
+    } catch (e) {
+      setImportItems([]);
+      setImportFileName("");
+      setError(e instanceof Error ? e.message : "Không đọc được file import.");
+    } finally {
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
+  }
+
+  async function executeImport() {
+    if (!importItems.length) return;
+    if (!online) return notify("Cần kết nối mạng để import");
+    if (pendingCount) return notify("Hãy đồng bộ hết thao tác đang chờ trước khi import");
+    if (importMode === "replace" && !window.confirm("Replace sẽ thay toàn bộ dữ liệu hiện tại bằng file import. Hệ thống sẽ tạo backup tự động trước khi thay thế. Tiếp tục?")) return;
+    setDataBusy(true);
+    setImportReport(null);
+    try {
+      const response = await fetch("/api/data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "import", mode: importMode, items: importItems.map(exportableItem) }) });
+      const data = await readJsonResponse(response);
+      if (!response.ok || !data.ok) throw new Error(data.error || "Import thất bại.");
+      setImportReport(data.report || null);
+      writeQueue([]);
+      await loadItems(true);
+      await loadBackups();
+      notify("Import hoàn tất");
+    } catch (e) { setError(e instanceof Error ? e.message : "Import thất bại."); }
+    finally { setDataBusy(false); }
+  }
+
+  async function emptyTrash() {
+    if (!trashCount) return;
+    if (!online) return notify("Cần kết nối mạng để xóa vĩnh viễn");
+    if (pendingCount) return notify("Hãy đồng bộ hết thao tác đang chờ trước");
+    if (!window.confirm(`Xóa vĩnh viễn toàn bộ ${trashCount} mục trong Thùng rác? Thao tác này không thể hoàn tác.`)) return;
+    setDataBusy(true);
+    try {
+      const response = await fetch("/api/data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "emptyTrash" }) });
+      const data = await readJsonResponse(response);
+      if (!response.ok || !data.ok) throw new Error(data.error || "Không dọn được thùng rác.");
+      setItems((current) => current.filter((item) => !item.deleted));
+      notify(`Đã xóa vĩnh viễn ${Number(data.removed || trashCount)} mục`);
+    } catch (e) { setError(e instanceof Error ? e.message : "Không dọn được thùng rác."); }
+    finally { setDataBusy(false); }
+  }
+
+  const importDuplicateCount = useMemo(() => {
+    if (!importItems.length) return 0;
+    const existingIds = new Set(items.map((item) => item.id));
+    const existingKeys = new Set(items.map(normalizedDuplicateKey));
+    let count = 0;
+    for (const item of importItems) if (existingIds.has(item.id) || existingKeys.has(normalizedDuplicateKey(item))) count += 1;
+    return count;
+  }, [importItems, items]);
+
   function resetAdvanced() {
     setDateFrom(""); setDateTo(""); setLinkFilter("all");
     setSearchFields({ name: true, detail: true, url: true, tags: true, collection: true });
+    setLibraryMode("all"); setSortMode("smart"); setSelectedTag("all"); setSelectedCollection("all");
   }
+
+  function resetDashboard() {
+    setSearch(""); setTypeFilter("all"); setLibraryMode("all"); setSelectedTag("all"); setSelectedCollection("all");
+    setSortMode("smart"); setDateFrom(""); setDateTo(""); setLinkFilter("all");
+    setSearchFields({ name: true, detail: true, url: true, tags: true, collection: true });
+    setAdvancedOpen(false); exitSelection();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    void flushQueue().then(() => loadItems(true));
+  }
+
+  const activeFilterCount = [
+    libraryMode !== "all", sortMode !== "smart", selectedTag !== "all", selectedCollection !== "all",
+    Boolean(dateFrom), Boolean(dateTo), linkFilter !== "all", selectionMode,
+    Object.values(searchFields).some((value) => !value),
+  ].filter(Boolean).length;
 
   const visibleSelectedCount = filtered.filter((item) => selectedIds.has(item.id)).length;
   const allVisibleSelected = filtered.length > 0 && visibleSelectedCount === filtered.length;
 
   return (
     <main className="shell">
-      <header className="topbar">
-        <div>
-          <div className="eyebrow">DRIVEVAULT · V1.4</div>
-          <h1>Kho dùng nhanh</h1>
-          <p>Tìm kiếm sâu, sắp xếp, collection và quản lý nhiều mục cùng lúc.</p>
-        </div>
+      <header className="topbar compact-topbar">
+        <button className="brand-button" onClick={resetDashboard} aria-label="DriveVault · làm mới và xóa bộ lọc">
+          <span className="brand-mark"><Database size={21}/></span>
+          <span className="brand-copy">
+            <span className="eyebrow">DRIVEVAULT · V1.6.0</span>
+            <strong>Kho dùng nhanh</strong>
+            <small>Media intelligence · phân loại thông minh</small>
+          </span>
+        </button>
         <div className="top-actions">
+          <button className="icon-button" aria-label="Backup & Data Portability" onClick={openDataTools}><Database size={19} /></button>
           <button className="icon-button" aria-label="Đổi giao diện sáng tối" onClick={() => setTheme((t) => t === "dark" ? "light" : "dark")}>{theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}</button>
-          <button className="icon-button" aria-label="Tải lại và đồng bộ" onClick={() => retrySync()} disabled={loading}><RefreshCcw size={19} className={loading ? "spin" : ""} /></button>
+          <button className="icon-button" aria-label="Tải lại và đồng bộ" onClick={resetDashboard} disabled={loading}><RefreshCcw size={19} className={loading ? "spin" : ""} /></button>
         </div>
       </header>
 
@@ -798,51 +1186,88 @@ export default function DriveVaultApp() {
         {pendingCount > 0 && online && <button onClick={() => retrySync()}>Đồng bộ ngay</button>}
       </div>
 
-      <section className="summary-strip summary-four">
-        <div><strong>{items.filter((x) => !x.archived).length}</strong><span>Đang dùng</span></div>
-        <div><strong>{items.filter((x) => x.pinned && !x.archived).length}</strong><span>Đã ghim</span></div>
-        <div><strong>{collections.length}</strong><span>Collection</span></div>
-        <div><strong>{items.filter((x) => x.archived).length}</strong><span>Lưu trữ</span></div>
-      </section>
-
-      <section className="toolbar">
+      <section className="toolbar compact-toolbar">
         <div className="search-row">
           <label className="searchbox"><Search size={18} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder='Tìm kiếm... dùng "cụm từ" để khớp chính xác' /></label>
-          <button className={`filter-toggle ${advancedOpen ? "active" : ""}`} onClick={() => setAdvancedOpen((v) => !v)} aria-label="Tìm kiếm nâng cao"><SlidersHorizontal size={18} /></button>
+          <button className={`filter-toggle ${activeFilterCount ? "active" : ""}`} onClick={() => setAdvancedOpen(true)} aria-label="Mở bộ lọc">
+            <SlidersHorizontal size={18} />
+            {activeFilterCount > 0 && <span className="filter-count">{activeFilterCount}</span>}
+          </button>
         </div>
 
-        {advancedOpen && <div className="advanced-panel">
-          <div className="advanced-title"><strong>Tìm kiếm nâng cao</strong><button onClick={resetAdvanced}>Đặt lại</button></div>
-          <div className="field-grid">
-            {([['name','Tên'],['detail','Nội dung'],['url','Link'],['tags','Tag'],['collection','Collection']] as [SearchField,string][]).map(([key,label]) => (
-              <label key={key} className="check-pill"><input type="checkbox" checked={searchFields[key]} onChange={(e) => setSearchFields((current) => ({ ...current, [key]: e.target.checked }))} />{label}</label>
-            ))}
-          </div>
-          <div className="advanced-grid">
-            <label>Từ ngày<input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} /></label>
-            <label>Đến ngày<input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} /></label>
-            <label>Liên kết<select value={linkFilter} onChange={(e) => setLinkFilter(e.target.value as LinkFilter)}><option value="all">Tất cả</option><option value="with">Có link</option><option value="without">Không có link</option></select></label>
-          </div>
-        </div>}
-
-        <div className="mode-tabs mode-five" role="tablist" aria-label="Chế độ thư viện">
-          {([['all','Tất cả'],['pinned','Đã ghim'],['recent','Gần đây'],['frequent','Dùng nhiều'],['archive','Lưu trữ']] as [LibraryMode,string][]).map(([key,label]) => <button key={key} className={libraryMode === key ? "active" : ""} onClick={() => { setLibraryMode(key); setSelectedIds(new Set()); }}>{key === "pinned" && <Star size={14} />}{key === "archive" && <Archive size={14} />}{label}</button>)}
-        </div>
-
-        <div className="organize-row">
-          <label className="sort-select"><ArrowDownAZ size={16} /><select value={sortMode} onChange={(e) => setSortMode(e.target.value as SortMode)}><option value="smart">Sắp xếp thông minh</option><option value="newest">Mới nhất</option><option value="oldest">Cũ nhất</option><option value="name-az">Tên A → Z</option><option value="name-za">Tên Z → A</option><option value="recent">Dùng gần đây</option><option value="frequent">Dùng nhiều nhất</option></select></label>
-          <button className={`selection-toggle ${selectionMode ? "active" : ""}`} onClick={() => selectionMode ? exitSelection() : setSelectionMode(true)}><CheckSquare2 size={16} />{selectionMode ? "Hủy chọn" : "Chọn nhiều"}</button>
-        </div>
-
-        {selectionMode && <div className="selection-head"><span>Đã chọn <strong>{selectedIds.size}</strong></span><button onClick={() => setSelectedIds(allVisibleSelected ? new Set() : new Set(filtered.map((item) => item.id)))}>{allVisibleSelected ? "Bỏ chọn tất cả" : `Chọn tất cả (${filtered.length})`}</button></div>}
-
-        <div className="chips" role="tablist" aria-label="Lọc loại lưu trữ">
+        <div className="chips storage-type-chips" role="tablist" aria-label="Lọc loại lưu trữ">
           {(["all", "media", "content", "other"] as const).map((key) => <button key={key} className={`chip ${typeFilter === key ? "active" : ""}`} onClick={() => setTypeFilter(key)}>{key === "all" ? "Tất cả loại" : typeMeta[key].label}</button>)}
         </div>
-
-        {collections.length > 0 && <div className="collection-filter"><button className={selectedCollection === "all" ? "active" : ""} onClick={() => setSelectedCollection("all")}><Folder size={13}/> Tất cả collection</button>{collections.map((name) => <button key={name} className={selectedCollection === name ? "active" : ""} onClick={() => setSelectedCollection(name)}><Folder size={13}/>{name}</button>)}</div>}
-        {allTags.length > 0 && <div className="tag-filter"><button className={selectedTag === "all" ? "active" : ""} onClick={() => setSelectedTag("all")}># Tất cả tag</button>{allTags.map((tag) => <button key={tag} className={selectedTag === tag ? "active" : ""} onClick={() => setSelectedTag(tag)}>#{tag}</button>)}</div>}
       </section>
+
+      {advancedOpen && (
+        <div className="modal-backdrop filter-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setAdvancedOpen(false); }}>
+          <section className="modal filter-sheet" role="dialog" aria-modal="true" aria-labelledby="filter-title">
+            <div className="sheet-handle" />
+            <div className="modal-head">
+              <div><div className="eyebrow">SEARCH & ORGANIZATION</div><h2 id="filter-title">Bộ lọc</h2></div>
+              <button className="icon-button" onClick={() => setAdvancedOpen(false)}><X size={20}/></button>
+            </div>
+
+            <div className="filter-content">
+              <section className="filter-section">
+                <div className="filter-section-title"><strong>Trạng thái thư viện</strong><span>Chọn vùng dữ liệu muốn xem</span></div>
+                <div className="filter-option-grid">
+                  {([['all','Tất cả'],['pinned','Đã ghim'],['recent','Gần đây'],['frequent','Dùng nhiều'],['archive','Lưu trữ'],['trash','Thùng rác']] as [LibraryMode,string][]).map(([key,label]) => <button key={key} className={libraryMode === key ? "active" : ""} onClick={() => { setLibraryMode(key); setSelectedIds(new Set()); }}>{key === "pinned" && <Star size={14} />}{key === "archive" && <Archive size={14} />}{key === "trash" && <Trash2 size={14} />}{label}</button>)}
+                </div>
+              </section>
+
+              <section className="filter-section">
+                <div className="filter-section-title"><strong>Tổ chức</strong><span>Sắp xếp và thao tác hàng loạt</span></div>
+                <div className="organize-row filter-organize-row">
+                  <label className="sort-select"><ArrowDownAZ size={16} /><select value={sortMode} onChange={(e) => setSortMode(e.target.value as SortMode)}><option value="smart">Sắp xếp thông minh</option><option value="newest">Mới nhất</option><option value="oldest">Cũ nhất</option><option value="name-az">Tên A → Z</option><option value="name-za">Tên Z → A</option><option value="recent">Dùng gần đây</option><option value="frequent">Dùng nhiều nhất</option></select></label>
+                  <button className={`selection-toggle ${selectionMode ? "active" : ""}`} onClick={() => selectionMode ? exitSelection() : setSelectionMode(true)}><CheckSquare2 size={16} />{selectionMode ? "Tắt chọn nhiều" : "Chọn nhiều"}</button>
+                </div>
+              </section>
+
+              <section className="filter-section">
+                <div className="filter-section-title"><strong>Phân loại</strong><span>Tạo trước như Shopee, Công việc, Template...</span></div>
+                <div className="classification-create">
+                  <input maxLength={80} value={newClassification} onChange={(e) => setNewClassification(e.target.value)} placeholder="Tên phân loại mới, VD: Shopee" onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void createClassification(); } }} />
+                  <button onClick={() => void createClassification()} disabled={classificationBusy}>{classificationBusy ? <Loader2 size={15} className="spin"/> : <Plus size={15}/>} Tạo</button>
+                </div>
+                <div className="filter-chip-wrap">
+                  <button className={selectedCollection === "all" ? "active" : ""} onClick={() => setSelectedCollection("all")}><Folder size={13}/> Tất cả phân loại</button>
+                  <button className={selectedCollection === "Chưa phân loại" ? "active" : ""} onClick={() => setSelectedCollection("Chưa phân loại")}><Folder size={13}/> Chưa phân loại</button>
+                  {collections.map((name) => <button key={name} className={selectedCollection === name ? "active" : ""} onClick={() => setSelectedCollection(name)}><Folder size={13}/>{name}</button>)}
+                </div>
+              </section>
+
+              <section className="filter-section">
+                <div className="filter-section-title"><strong>Tag</strong><span>Lọc nhanh theo nhãn nội dung</span></div>
+                <div className="filter-chip-wrap">
+                  <button className={selectedTag === "all" ? "active" : ""} onClick={() => setSelectedTag("all")}># Tất cả tag</button>
+                  {allTags.map((tag) => <button key={tag} className={selectedTag === tag ? "active" : ""} onClick={() => setSelectedTag(tag)}>#{tag}</button>)}
+                </div>
+              </section>
+
+              <section className="filter-section">
+                <div className="filter-section-title"><strong>Tìm kiếm nâng cao</strong><span>Giới hạn trường, ngày và loại liên kết</span></div>
+                <div className="field-grid">
+                  {([['name','Tên'],['detail','Nội dung'],['url','Link'],['tags','Tag'],['collection','Phân loại']] as [SearchField,string][]).map(([key,label]) => (
+                    <label key={key} className="check-pill"><input type="checkbox" checked={searchFields[key]} onChange={(e) => setSearchFields((current) => ({ ...current, [key]: e.target.checked }))} />{label}</label>
+                  ))}
+                </div>
+                <div className="advanced-grid">
+                  <label>Từ ngày<input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} /></label>
+                  <label>Đến ngày<input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} /></label>
+                  <label>Liên kết<select value={linkFilter} onChange={(e) => setLinkFilter(e.target.value as LinkFilter)}><option value="all">Tất cả</option><option value="with">Có link</option><option value="without">Không có link</option></select></label>
+                </div>
+              </section>
+            </div>
+
+            <div className="filter-footer">
+              <button className="secondary" onClick={resetAdvanced}>Đặt lại</button>
+              <button className="primary" onClick={() => setAdvancedOpen(false)}>Áp dụng {activeFilterCount > 0 ? `· ${activeFilterCount} bộ lọc` : ""}</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {error && <div className="alert">{error}</div>}
 
@@ -856,14 +1281,15 @@ export default function DriveVaultApp() {
             key={item.id}
             item={item}
             onOpen={() => setSelectedId(item.id)}
-            onEdit={() => openEdit(item)}
-            onDelete={() => deleteItem(item)}
+            onEdit={() => item.deleted ? restoreTrashItem(item) : openEdit(item)}
+            onDelete={() => item.deleted ? purgeItem(item) : deleteItem(item)}
             onCopy={() => copyItem(item)}
             onOpenUrl={() => recordUsage(item)}
             onTogglePin={() => togglePin(item)}
             selectionMode={selectionMode}
             checked={selectedIds.has(item.id)}
             onSelect={() => toggleSelection(item.id)}
+            trashed={item.deleted}
           />
         ))}
       </section>
@@ -876,13 +1302,84 @@ export default function DriveVaultApp() {
       {selectionMode && selectedIds.size > 0 && <div className="bulk-bar">
         <div className="bulk-count"><strong>{selectedIds.size}</strong><span>mục</span></div>
         <div className="bulk-actions">
-          <button onClick={() => applyBulkAction("pin")}><Pin size={16}/> Ghim</button>
-          <button onClick={() => applyBulkAction("unpin")}><PinOff size={16}/> Bỏ ghim</button>
-          {libraryMode === "archive" ? <button onClick={() => applyBulkAction("restore")}><ArchiveRestore size={16}/> Khôi phục</button> : <button onClick={() => applyBulkAction("archive")}><Archive size={16}/> Lưu trữ</button>}
-          <label className="bulk-move"><FolderInput size={16}/><input list="bulk-collection-options" value={bulkCollection} onChange={(e) => setBulkCollection(e.target.value)} placeholder="Collection"/><datalist id="bulk-collection-options">{collections.map((name) => <option key={name} value={name}/>)}</datalist><button onClick={() => applyBulkAction("move")}>Chuyển</button></label>
-          <button className="danger-action" onClick={() => applyBulkAction("delete")}><Trash2 size={16}/> Xóa</button>
+          {libraryMode === "trash" ? <>
+            <button onClick={() => applyBulkAction("restoreTrash")}><ArchiveRestore size={16}/> Khôi phục</button>
+            <button className="danger-action" onClick={() => applyBulkAction("purge")}><Trash2 size={16}/> Xóa vĩnh viễn</button>
+          </> : <>
+            <button onClick={() => applyBulkAction("pin")}><Pin size={16}/> Ghim</button>
+            <button onClick={() => applyBulkAction("unpin")}><PinOff size={16}/> Bỏ ghim</button>
+            {libraryMode === "archive" ? <button onClick={() => applyBulkAction("restore")}><ArchiveRestore size={16}/> Khôi phục</button> : <button onClick={() => applyBulkAction("archive")}><Archive size={16}/> Lưu trữ</button>}
+            <label className="bulk-move"><FolderInput size={16}/><input list="bulk-collection-options" value={bulkCollection} onChange={(e) => setBulkCollection(e.target.value)} placeholder="Phân loại"/><datalist id="bulk-collection-options">{collections.map((name) => <option key={name} value={name}/>)}</datalist><button onClick={() => applyBulkAction("move")}>Chuyển</button></label>
+            <button className="danger-action" onClick={() => applyBulkAction("delete")}><Trash2 size={16}/> Thùng rác</button>
+          </>}
         </div>
       </div>}
+
+      {showDataTools && (
+        <div className="modal-backdrop data-tools-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !dataBusy) setShowDataTools(false); }}>
+          <section className="modal data-tools-sheet" role="dialog" aria-modal="true" aria-labelledby="data-tools-title">
+            <div className="sheet-handle" />
+            <div className="modal-head">
+              <div><div className="eyebrow">V1.6 · DATA & LINK INTELLIGENCE</div><h2 id="data-tools-title">Backup & dữ liệu</h2></div>
+              <button className="icon-button" onClick={() => setShowDataTools(false)} disabled={dataBusy}><X size={20}/></button>
+            </div>
+
+            <div className="data-tools-content">
+              <section className="health-grid">
+                <div><strong>{items.length}</strong><span>Tổng bản ghi</span></div>
+                <div><strong>{duplicateCount}</strong><span>Nghi trùng</span></div>
+                <div><strong>{suspiciousLinks.length}</strong><span>Link cần kiểm tra</span></div>
+                <div><strong>{trashCount}</strong><span>Trong thùng rác</span></div>
+              </section>
+
+              <section className="tool-card">
+                <div className="tool-card-head"><div><Download size={18}/><div><strong>Export dữ liệu</strong><span>Tải bản sao về thiết bị.</span></div></div></div>
+                <div className="tool-button-grid">
+                  <button className="secondary" onClick={exportJson}><Download size={16}/> Export JSON</button>
+                  <button className="secondary" onClick={exportCsv}><Download size={16}/> Export CSV</button>
+                </div>
+              </section>
+
+              <section className="tool-card">
+                <div className="tool-card-head"><div><Upload size={18}/><div><strong>Import JSON</strong><span>Preview trước khi ghi vào Google Sheet.</span></div></div></div>
+                <input ref={importInputRef} className="hidden-file-input" type="file" accept="application/json,.json" onChange={(e) => handleImportFile(e.target.files?.[0])} />
+                <button className="file-picker" onClick={() => importInputRef.current?.click()}><Upload size={16}/>{importFileName || "Chọn file DriveVault JSON"}</button>
+                {importItems.length > 0 && <div className="import-preview">
+                  <div><strong>{importItems.length}</strong><span>Mục hợp lệ</span></div>
+                  <div><strong>{importDuplicateCount}</strong><span>Có thể trùng</span></div>
+                  <label>Chiến lược<select value={importMode} onChange={(e) => setImportMode(e.target.value as "skip" | "merge" | "replace")}><option value="skip">Skip dữ liệu trùng</option><option value="merge">Merge dữ liệu trùng</option><option value="replace">Replace toàn bộ</option></select></label>
+                  <button className="primary data-action" disabled={dataBusy || !online} onClick={executeImport}>{dataBusy ? <Loader2 size={16} className="spin"/> : <Upload size={16}/>} Import</button>
+                </div>}
+                {importReport && <div className="report-strip"><span>Nhận <strong>{importReport.received}</strong></span><span>Thêm <strong>{importReport.added}</strong></span><span>Cập nhật <strong>{importReport.updated}</strong></span><span>Bỏ qua <strong>{importReport.skipped}</strong></span></div>}
+              </section>
+
+              <section className="tool-card">
+                <div className="tool-card-head"><div><Database size={18}/><div><strong>Backup Snapshot</strong><span>Lưu snapshot trực tiếp trong sheet Backups.</span></div></div><button className="mini-refresh" onClick={() => loadBackups()} disabled={!online || dataBusy}><RefreshCcw size={15}/></button></div>
+                <div className="backup-create"><input maxLength={160} value={backupNote} onChange={(e) => setBackupNote(e.target.value)} placeholder="Ghi chú backup (không bắt buộc)"/><button className="primary" onClick={createBackupSnapshot} disabled={!online || dataBusy}>{dataBusy ? <Loader2 size={16} className="spin"/> : <Database size={16}/>} Tạo snapshot</button></div>
+                <div className="backup-list">
+                  {backups.length === 0 ? <div className="backup-empty">Chưa có snapshot hoặc chưa tải được danh sách.</div> : backups.map((backup) => <div className="backup-row" key={backup.id}>
+                    <div><strong>{formatDate(backup.createdAt)} · {new Date(backup.createdAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}</strong><span>{backup.itemCount} mục{backup.note ? ` · ${backup.note}` : ""}</span></div>
+                    <div className="backup-row-actions"><button onClick={() => restoreSnapshot(backup)} disabled={dataBusy}><History size={15}/> Restore</button><button className="danger-text" onClick={() => removeSnapshot(backup)} disabled={dataBusy}><Trash2 size={15}/></button></div>
+                  </div>)}
+                </div>
+              </section>
+
+              <section className="tool-card diagnostic-card">
+                <div className="tool-card-head"><div><Link2 size={18}/><div><strong>Kiểm tra dữ liệu</strong><span>Phát hiện dữ liệu trùng và link media không nhận diện được rõ ràng.</span></div></div></div>
+                {duplicateCount === 0 && suspiciousLinks.length === 0 ? <div className="diagnostic-ok"><Check size={16}/> Chưa phát hiện vấn đề cơ bản.</div> : <div className="diagnostic-warn">
+                  {duplicateCount > 0 && <span><AlertCircle size={15}/> Có {duplicateCount} mục nghi trùng theo URL hoặc Tên + Nội dung.</span>}
+                  {suspiciousLinks.length > 0 && <span><AlertCircle size={15}/> Có {suspiciousLinks.length} link Ảnh/Video cần kiểm tra định dạng.</span>}
+                </div>}
+              </section>
+
+              <section className="tool-card trash-tool-card">
+                <div className="tool-card-head"><div><Trash2 size={18}/><div><strong>Thùng rác</strong><span>Xóa thường chỉ chuyển dữ liệu vào đây.</span></div></div></div>
+                <button className="danger-outline" disabled={!trashCount || dataBusy || !online} onClick={emptyTrash}><Trash2 size={16}/> Xóa vĩnh viễn toàn bộ ({trashCount})</button>
+              </section>
+            </div>
+          </section>
+        </div>
+      )}
 
       {showForm && (
         <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) setShowForm(false); }}>
@@ -895,7 +1392,7 @@ export default function DriveVaultApp() {
             <form onSubmit={saveItem}>
               <label>Loại lưu trữ<select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value as StorageType }))}><option value="media">Ảnh / Video</option><option value="content">Nội dung</option><option value="other">Khác</option></select></label>
               <label>Tên<input maxLength={120} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="VD: Bộ ảnh sự kiện tháng 9" /></label>
-              <label>Collection<input list="collection-options" maxLength={80} value={form.collection || ""} onChange={(e) => setForm((f) => ({ ...f, collection: e.target.value }))} placeholder="VD: Công việc" /><datalist id="collection-options">{collections.map((name) => <option key={name} value={name}/>)}</datalist></label>
+              <label>Phân loại<input list="collection-options" maxLength={80} value={form.collection || ""} onChange={(e) => setForm((f) => ({ ...f, collection: e.target.value }))} placeholder="VD: Shopee" /><datalist id="collection-options">{collections.map((name) => <option key={name} value={name}/>)}</datalist></label>
               <label>Tag <small>(phân cách bằng dấu phẩy)</small><input value={tagText} onChange={(e) => setTagText(e.target.value)} placeholder="VD: công việc, email, mẫu" /></label>
               <label>Nội dung chi tiết {form.type === "media" && <small>(không bắt buộc)</small>}{form.type === "other" && <small>(không bắt buộc nếu có link)</small>}<textarea rows={7} value={form.detail} onChange={(e) => setForm((f) => ({ ...f, detail: e.target.value }))} placeholder={form.type === "media" ? "Mô tả ảnh/video, ghi chú, nội dung liên quan..." : "Nhập nội dung cần lưu để sao chép nhanh..."} /></label>
               {(form.type === "media" || form.type === "other") && <label>Đường link Google Drive {form.type === "other" && <small>(không bắt buộc)</small>}<input inputMode="url" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} placeholder="https://drive.google.com/..." /></label>}
@@ -911,28 +1408,35 @@ export default function DriveVaultApp() {
             <div className="sheet-handle" />
             <div className="modal-head detail-modal-head">
               <span className={`badge ${typeMeta[selected.type].className}`}>{(() => { const I = typeMeta[selected.type].icon; return <I size={14}/>; })()}{typeMeta[selected.type].label}</span>
-              <div className="detail-head-actions"><button className={`pin-button ${selected.pinned ? "active" : ""}`} onClick={() => togglePin(selected)} aria-label={selected.pinned ? "Bỏ ghim" : "Ghim"}>{selected.pinned ? <PinOff size={18}/> : <Pin size={18}/>}</button><button className="icon-button" onClick={() => setSelectedId(null)}><X size={20}/></button></div>
+              <div className="detail-head-actions">{!selected.deleted && <button className={`pin-button ${selected.pinned ? "active" : ""}`} onClick={() => togglePin(selected)} aria-label={selected.pinned ? "Bỏ ghim" : "Ghim"}>{selected.pinned ? <PinOff size={18}/> : <Pin size={18}/>}</button>}<button className="icon-button" onClick={() => setSelectedId(null)}><X size={20}/></button></div>
             </div>
             <div className="detail-content">
               <h2 id="detail-title">{selected.name}</h2>
-              <div className="collection-label detail-collection"><Folder size={14}/>{selected.collection}{selected.archived && <span><Archive size={13}/> Đã lưu trữ</span>}</div>
+              <div className="collection-label detail-collection"><Folder size={14}/>{selected.collection}{selected.archived && <span><Archive size={13}/> Đã lưu trữ</span>}{selected.deleted && <span className="trash-inline"><Trash2 size={13}/> Thùng rác {selected.deletedAt ? `· ${formatDate(selected.deletedAt)}` : ""}</span>}</div>
               <div className="detail-date">Đã lưu {formatDate(selected.createdAt)} · đã dùng {selected.useCount} lần{selected.lastUsedAt ? ` · ${formatRelative(selected.lastUsedAt)}` : ""}</div>
               <SyncBadge state={selected.syncState} />
+              {selected.type === "media" && selected.url && <MediaDetailPreview url={selected.url} />}
+              {selected.url && (() => { const intel = analyzeLink(selected.url); return <div className={`link-intel-panel ${intel.kind === "invalid" ? "invalid" : ""}`}><div><Link2 size={15}/><strong>{intel.label}</strong></div><span>{intel.provider || "Không nhận diện"}{intel.fileId ? ` · ID: ${intel.fileId}` : ""}</span></div>; })()}
               {selected.tags.length > 0 && <div className="tag-row detail-tags">{selected.tags.map((tag) => <span className="tag" key={tag}>#{tag}</span>)}</div>}
               {selected.detail ? <div className="full-detail">{selected.detail}</div> : <div className="no-detail">Không có nội dung chi tiết.</div>}
               {selected.url && <div className="url-preview">{selected.url}</div>}
             </div>
             <div className="detail-actions detail-actions-v14">
-              {selected.detail && <button className="secondary" onClick={() => copyItem(selected)}><Clipboard size={18}/> Sao chép</button>}
-              {selected.url && <a className="primary" href={selected.url} target="_blank" rel="noreferrer" onClick={() => recordUsage(selected)}><ExternalLink size={18}/> Truy cập Drive</a>}
-              <button className="secondary" onClick={() => openEdit(selected)}><Pencil size={18}/> Sửa</button>
-              <button className="secondary" onClick={() => archiveItem(selected)}>{selected.archived ? <ArchiveRestore size={18}/> : <Archive size={18}/>} {selected.archived ? "Khôi phục" : "Lưu trữ"}</button>
+              {selected.deleted ? <>
+                <button className="primary" onClick={() => restoreTrashItem(selected)}><ArchiveRestore size={18}/> Khôi phục</button>
+                <button className="danger-button" onClick={() => purgeItem(selected)}><Trash2 size={18}/> Xóa vĩnh viễn</button>
+              </> : <>
+                {selected.detail && <button className="secondary" onClick={() => copyItem(selected)}><Clipboard size={18}/> Sao chép</button>}
+                {selected.url && <a className="primary" href={selected.url} target="_blank" rel="noreferrer" onClick={() => recordUsage(selected)}><ExternalLink size={18}/> Truy cập Drive</a>}
+                <button className="secondary" onClick={() => openEdit(selected)}><Pencil size={18}/> Sửa</button>
+                <button className="secondary" onClick={() => archiveItem(selected)}>{selected.archived ? <ArchiveRestore size={18}/> : <Archive size={18}/>} {selected.archived ? "Khôi phục" : "Lưu trữ"}</button>
+              </>}
             </div>
           </section>
         </div>
       )}
 
-      {undoDelete && <div className="undo-toast"><span>Đã xóa “{undoDelete.item.name}”</span><button onClick={undoDeleteItem}><Undo2 size={16}/> Hoàn tác</button></div>}
+      {undoDelete && <div className="undo-toast"><span>Đã chuyển “{undoDelete.item.name}” vào Thùng rác</span><button onClick={undoDeleteItem}><Undo2 size={16}/> Hoàn tác</button></div>}
       {toast && <div className="toast">{toast}</div>}
     </main>
   );
