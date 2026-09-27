@@ -21,6 +21,7 @@ async function parseAppsScriptResponse(response: Response) {
     throw new Error(`Google Apps Script không trả JSON hợp lệ. HTTP ${response.status}. Phản hồi: ${preview || "(trống)"}`);
   }
   if (!response.ok) throw new Error(data?.error || `Google Apps Script trả về ${response.status}`);
+  if (data?.ok === false) throw new Error(data?.error || "Google Apps Script xử lý thất bại.");
   return data;
 }
 
@@ -48,7 +49,7 @@ async function postAction(action: string, payload: Record<string, unknown>) {
   try {
     return await callAppsScript(body, url);
   } catch (error) {
-    // Create là idempotent ở V1.2 nên có thể retry 1 lần mà không sinh bản ghi trùng.
+    // Create dùng ID do client sinh nên retry an toàn, không tạo trùng bản ghi.
     if (action !== "create") throw error;
     await new Promise((resolve) => setTimeout(resolve, 350));
     return await callAppsScript(body, url, 12000);
@@ -70,7 +71,10 @@ export async function GET() {
       clearTimeout(timeout);
     }
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "Không tải được dữ liệu." }, { status: 500 });
+    const message = error instanceof Error && error.name === "AbortError"
+      ? "Google Apps Script phản hồi quá chậm."
+      : error instanceof Error ? error.message : "Không tải được dữ liệu.";
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }
 
@@ -81,7 +85,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(await postAction("create", { item }));
   } catch (error) {
     const message = error instanceof Error && error.name === "AbortError"
-      ? "Google Apps Script phản hồi quá chậm. Hãy thử lại."
+      ? "Google Apps Script phản hồi quá chậm. Dữ liệu vẫn được giữ trong hàng đợi đồng bộ."
       : error instanceof Error ? error.message : "Không lưu được dữ liệu.";
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
@@ -92,7 +96,32 @@ export async function PUT(request: NextRequest) {
     const item = await request.json();
     return NextResponse.json(await postAction("update", { item }));
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "Không cập nhật được dữ liệu." }, { status: 500 });
+    const message = error instanceof Error && error.name === "AbortError"
+      ? "Google Apps Script phản hồi quá chậm."
+      : error instanceof Error ? error.message : "Không cập nhật được dữ liệu.";
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const body = await request.json();
+    if (body?.action === "pin") {
+      return NextResponse.json(await postAction("pin", { id: body.id, pinned: Boolean(body.pinned) }));
+    }
+    if (body?.action === "use") {
+      return NextResponse.json(await postAction("use", {
+        id: body.id,
+        useCount: Number(body.useCount || 0),
+        lastUsedAt: String(body.lastUsedAt || ""),
+      }));
+    }
+    return NextResponse.json({ ok: false, error: "Action PATCH không hợp lệ." }, { status: 400 });
+  } catch (error) {
+    const message = error instanceof Error && error.name === "AbortError"
+      ? "Google Apps Script phản hồi quá chậm."
+      : error instanceof Error ? error.message : "Không đồng bộ được thao tác.";
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }
 
@@ -101,6 +130,9 @@ export async function DELETE(request: NextRequest) {
     const { id } = await request.json();
     return NextResponse.json(await postAction("delete", { id }));
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "Không xóa được dữ liệu." }, { status: 500 });
+    const message = error instanceof Error && error.name === "AbortError"
+      ? "Google Apps Script phản hồi quá chậm."
+      : error instanceof Error ? error.message : "Không xóa được dữ liệu.";
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }

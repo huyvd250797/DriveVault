@@ -1,51 +1,108 @@
-# DriveVault Mobile V1.2.0
+# DriveVault Mobile V1.3.0 – Smart Library & Reliability
 
-Bản nâng cấp tập trung vào tốc độ lưu dữ liệu, swipe action, floating controls và trải nghiệm bottom sheet trên mobile.
+V1.3.0 nâng DriveVault từ kho lưu trữ nhanh thành thư viện cá nhân có tổ chức và có cơ chế chống mất thao tác khi mạng chập chờn.
 
-## Nâng cấp V1.2.0 – Instant Save & Mobile Polish
+## Điểm mới
 
-- Card chuyển sang nền solid, không còn nhìn xuyên thấy nút Sửa/Xóa phía dưới.
-- Sửa/Xóa chỉ hiển thị khi người dùng thực sự swipe trái.
-- Nút Thêm mới thu nhỏ thành FAB `+` ở góc phải dưới.
-- Sau 0,5 giây không scroll, cụm floating button giảm opacity; khi đang scroll opacity trở lại 100%.
-- Có nút mũi tên lên đầu trang; chỉ hiện khi đã scroll xuống và tự ẩn khi về đầu trang.
-- Bottom sheet khóa scroll của background; chỉ phần sheet được phép cuộn.
-- Thêm mới dùng optimistic UI: block xuất hiện ngay, không chờ Google Apps Script hoàn tất.
-- Request tạo mới dùng ID do client sinh để retry an toàn, tránh ghi trùng nếu Apps Script phản hồi chậm.
-- API có timeout, retry một lần cho create, kiểm tra URL `/exec` và thông báo lỗi JSON rõ hơn.
-- API key được trim ở cả frontend server và Apps Script để tránh lỗi do khoảng trắng/ký tự xuống dòng.
+### 1. Tag
+- Mỗi mục có thể gắn nhiều tag, nhập cách nhau bằng dấu phẩy.
+- Tag được hiển thị ngay trên card và trong bottom sheet.
+- Dashboard có bộ lọc theo tag.
+- Tìm kiếm cũng tìm trong tag.
 
-## Bắt buộc khi nâng cấp từ V1.1.0
+### 2. Pin
+- Có nút ghim ngay trên card và trong bottom sheet.
+- Mục đã ghim được ưu tiên hiển thị trước ở chế độ mặc định.
+- Có tab **Đã ghim** riêng.
+
+### 3. Recent / Frequently Used
+- App ghi nhận số lần sử dụng khi người dùng **Sao chép nội dung** hoặc **Truy cập Drive**.
+- Tab **Gần đây** sắp xếp theo lần sử dụng gần nhất.
+- Tab **Dùng nhiều** sắp xếp theo số lượt sử dụng.
+- Thống kê tổng lượt sử dụng hiển thị trên dashboard.
+
+### 4. Offline Queue
+- Thêm mới, chỉnh sửa, ghim/bỏ ghim và ghi nhận lượt dùng được cập nhật ngay trên UI.
+- Khi mất mạng, thao tác được lưu trong `localStorage` và chuyển sang trạng thái **Chờ đồng bộ**.
+- Khi có mạng lại, app tự đồng bộ hàng đợi lên Google Sheet.
+- Có nút **Đồng bộ ngay** để retry thủ công.
+- Dữ liệu gần nhất cũng được cache local để mở app nhanh hơn.
+
+> Offline queue hoạt động khi app đã được mở/tải trước đó trên thiết bị. V1.3 chưa phải PWA offline hoàn toàn.
+
+### 5. Sync State
+Mỗi card hiển thị một trong các trạng thái:
+- `Đã đồng bộ`
+- `Chờ đồng bộ`
+- `Đang đồng bộ`
+- `Lỗi đồng bộ`
+
+Thanh trạng thái phía trên dashboard cho biết thiết bị đang online/offline và số thao tác đang chờ.
+
+### 6. Undo Delete
+- Swipe trái → Xóa: card biến mất ngay.
+- App cho **5 giây Hoàn tác**.
+- Chỉ sau thời gian này thao tác xóa mới được đưa lên Google Sheet.
+- Nếu xóa một mục vừa tạo nhưng chưa sync, app hủy luôn thao tác tạo thay vì tạo rồi xóa trên server.
+
+## Nâng cấp database từ V1.2.0
+
+V1.3 giữ nguyên Sheet `Vault` và tự mở rộng header từ:
+
+```text
+id | type | name | detail | url | createdAt | updatedAt
+```
+
+thành:
+
+```text
+id | type | name | detail | url | createdAt | updatedAt | tags | pinned | useCount | lastUsedAt
+```
+
+Dữ liệu cũ không bị xóa. Các cột mới mặc định:
+- `tags`: `[]`
+- `pinned`: `false`
+- `useCount`: `0`
+- `lastUsedAt`: trống
+
+## Bắt buộc khi nâng cấp từ V1.2.0
 
 1. Mở Google Sheet database hiện tại.
 2. Vào **Extensions → Apps Script**.
-3. Thay code cũ bằng toàn bộ nội dung `google-apps-script/Code.gs` của V1.2.0.
+3. Thay code cũ bằng toàn bộ file `google-apps-script/Code.gs` của V1.3.0.
 4. Vào **Deploy → Manage deployments → Edit**.
-5. Chọn **New version** và Deploy.
-6. Giữ nguyên Web App URL nếu vẫn kết thúc bằng `/exec`.
-7. Kiểm tra Script Property `DRIVEVAULT_API_KEY` giống hệt Environment Variable cùng tên trên Vercel.
-8. Deploy source V1.2.0 lên Vercel.
+5. Chọn **New version → Deploy**.
+6. Giữ nguyên Web App URL nếu URL hiện tại vẫn kết thúc bằng `/exec`.
+7. Đảm bảo `DRIVEVAULT_API_KEY` trong **Script Properties** giống Environment Variable trên Vercel.
+8. Deploy source V1.3.0 lên Vercel.
+9. Mở app và bấm nút Refresh/Sync một lần để backend tự bổ sung header mới.
 
-> Dữ liệu V1.1.0 vẫn dùng nguyên, không cần migrate hay tạo Sheet mới.
-
-## Cấu hình Vercel
+## Environment Variables
 
 ```env
 GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec
 DRIVEVAULT_API_KEY=CHUOI_BI_MAT_GIONG_TRONG_SCRIPT_PROPERTIES
 ```
 
-## Cấu trúc dữ liệu
+## Cấu trúc dữ liệu V1.3
 
-| id | type | name | detail | url | createdAt | updatedAt |
-|---|---|---|---|---|---|---|
-| UUID | media/content/other | Tên | Nội dung chi tiết | Link Drive | ISO datetime | ISO datetime |
+| Cột | Ý nghĩa |
+|---|---|
+| `id` | UUID do client sinh |
+| `type` | `media` / `content` / `other` |
+| `name` | Tên mục |
+| `detail` | Nội dung chi tiết |
+| `url` | Link Drive |
+| `createdAt` | Ngày tạo |
+| `updatedAt` | Ngày cập nhật |
+| `tags` | JSON array tag |
+| `pinned` | Đã ghim hay chưa |
+| `useCount` | Số lượt sử dụng |
+| `lastUsedAt` | Lần sử dụng gần nhất |
 
-## Quy tắc từng loại
+## Lưu ý về thống kê lượt dùng
 
-- **Ảnh / Video**: Tên + Link Drive bắt buộc; nội dung chi tiết tùy chọn.
-- **Nội dung**: Tên + nội dung chi tiết bắt buộc; hỗ trợ copy nhanh.
-- **Khác**: Tên bắt buộc; cần ít nhất nội dung hoặc link.
+Để tránh retry làm tăng sai số khi mạng chập chờn, client gửi **mốc useCount hiện tại**, backend lấy giá trị lớn hơn giữa dữ liệu trên Sheet và dữ liệu client. Cơ chế này ưu tiên tính idempotent và phù hợp với app cá nhân/single-user.
 
 ## Chạy local
 
@@ -57,8 +114,8 @@ npm run dev
 
 ## Deploy Vercel
 
-Import repository/folder lên Vercel, khai báo Environment Variables rồi Deploy.
+Import folder lên Vercel, khai báo 2 Environment Variables rồi Deploy.
 
 ## Phiên bản
 
-`V1.2.0 - Instant Save & Mobile Polish`
+`V1.3.0 – Smart Library & Reliability`

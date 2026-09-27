@@ -1,10 +1,10 @@
 /**
- * DriveVault V1.2.0 - Google Apps Script backend
- * Gắn script này với Google Sheet dùng làm database.
+ * DriveVault V1.3.0 - Smart Library & Reliability
+ * Google Sheets backend.
  */
 
 const SHEET_NAME = 'Vault';
-const HEADERS = ['id', 'type', 'name', 'detail', 'url', 'createdAt', 'updatedAt'];
+const HEADERS = ['id', 'type', 'name', 'detail', 'url', 'createdAt', 'updatedAt', 'tags', 'pinned', 'useCount', 'lastUsedAt'];
 
 function doGet(e) {
   try {
@@ -24,6 +24,8 @@ function doPost(e) {
 
     if (payload.action === 'create') return json_({ ok: true, item: createItem_(payload.item || {}) });
     if (payload.action === 'update') return json_({ ok: true, item: updateItem_(payload.item || {}) });
+    if (payload.action === 'pin') return json_({ ok: true, item: setPinned_(String(payload.id || ''), Boolean(payload.pinned)) });
+    if (payload.action === 'use') return json_({ ok: true, item: markUsed_(String(payload.id || ''), Number(payload.useCount || 0), String(payload.lastUsedAt || '')) });
     if (payload.action === 'delete') {
       deleteItem_(String(payload.id || ''));
       return json_({ ok: true, id: String(payload.id || '') });
@@ -34,7 +36,29 @@ function doPost(e) {
   }
 }
 
-function normalizeItem_(input, requireId) {
+function normalizeTags_(value) {
+  let tags = [];
+  if (Array.isArray(value)) tags = value;
+  else if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      tags = Array.isArray(parsed) ? parsed : value.split(',');
+    } catch (e) {
+      tags = value.split(',');
+    }
+  }
+  const seen = {};
+  return tags
+    .map(function(tag) { return String(tag || '').trim(); })
+    .filter(function(tag) {
+      if (!tag || seen[tag]) return false;
+      seen[tag] = true;
+      return true;
+    })
+    .slice(0, 12);
+}
+
+function normalizeBasic_(input, requireId) {
   const id = String(input.id || '').trim();
   const type = String(input.type || '').trim();
   const name = String(input.name || '').trim();
@@ -52,10 +76,8 @@ function normalizeItem_(input, requireId) {
 }
 
 function createItem_(input) {
-  const clean = normalizeItem_(input, false);
+  const clean = normalizeBasic_(input, false);
   const sheet = getSheet_();
-
-  // V1.2: ID do client sinh để request create có thể retry an toàn mà không tạo trùng dữ liệu.
   const id = clean.id || Utilities.getUuid();
   const existingRow = clean.id ? findRowById_(sheet, clean.id) : 0;
   if (existingRow) return rowToItem_(sheet.getRange(existingRow, 1, 1, HEADERS.length).getValues()[0]);
@@ -68,44 +90,79 @@ function createItem_(input) {
     detail: clean.detail,
     url: clean.url,
     createdAt: String(input.createdAt || now),
-    updatedAt: String(input.updatedAt || now)
+    updatedAt: String(input.updatedAt || now),
+    tags: normalizeTags_(input.tags),
+    pinned: Boolean(input.pinned),
+    useCount: Math.max(0, Number(input.useCount || 0)),
+    lastUsedAt: String(input.lastUsedAt || '')
   };
 
   sheet.getRange(sheet.getLastRow() + 1, 1, 1, HEADERS.length).setValues([[
-    item.id, item.type, item.name, item.detail, item.url, item.createdAt, item.updatedAt
+    item.id, item.type, item.name, item.detail, item.url, item.createdAt, item.updatedAt,
+    JSON.stringify(item.tags), item.pinned, item.useCount, item.lastUsedAt
   ]]);
   return item;
 }
 
 function updateItem_(input) {
-  const clean = normalizeItem_(input, true);
+  const clean = normalizeBasic_(input, true);
   const sheet = getSheet_();
   const row = findRowById_(sheet, clean.id);
   if (!row) throw new Error('Không tìm thấy dữ liệu cần sửa.');
 
-  const current = sheet.getRange(row, 1, 1, HEADERS.length).getValues()[0];
-  const createdAt = current[5] instanceof Date ? current[5].toISOString() : String(current[5] || new Date().toISOString());
+  const current = rowToItem_(sheet.getRange(row, 1, 1, HEADERS.length).getValues()[0]);
   const updatedAt = new Date().toISOString();
-  sheet.getRange(row, 1, 1, HEADERS.length).setValues([[
-    clean.id, clean.type, clean.name, clean.detail, clean.url, createdAt, updatedAt
-  ]]);
+  const tags = Array.isArray(input.tags) ? normalizeTags_(input.tags) : current.tags;
+  const pinned = typeof input.pinned === 'boolean' ? input.pinned : current.pinned;
 
-  return {
+  const item = {
     id: clean.id,
     type: clean.type,
     name: clean.name,
     detail: clean.detail,
     url: clean.url,
-    createdAt: createdAt,
-    updatedAt: updatedAt
+    createdAt: current.createdAt || updatedAt,
+    updatedAt: updatedAt,
+    tags: tags,
+    pinned: pinned,
+    useCount: current.useCount,
+    lastUsedAt: current.lastUsedAt
   };
+
+  sheet.getRange(row, 1, 1, HEADERS.length).setValues([[
+    item.id, item.type, item.name, item.detail, item.url, item.createdAt, item.updatedAt,
+    JSON.stringify(item.tags), item.pinned, item.useCount, item.lastUsedAt
+  ]]);
+  return item;
+}
+
+function setPinned_(id, pinned) {
+  if (!id) throw new Error('Thiếu ID dữ liệu.');
+  const sheet = getSheet_();
+  const row = findRowById_(sheet, id);
+  if (!row) throw new Error('Không tìm thấy dữ liệu cần ghim.');
+  sheet.getRange(row, 9).setValue(Boolean(pinned));
+  return rowToItem_(sheet.getRange(row, 1, 1, HEADERS.length).getValues()[0]);
+}
+
+function markUsed_(id, requestedUseCount, lastUsedAt) {
+  if (!id) throw new Error('Thiếu ID dữ liệu.');
+  const sheet = getSheet_();
+  const row = findRowById_(sheet, id);
+  if (!row) throw new Error('Không tìm thấy dữ liệu cần cập nhật lượt dùng.');
+
+  const currentCount = Number(sheet.getRange(row, 10).getValue() || 0);
+  const nextCount = Math.max(currentCount, Math.max(0, Number(requestedUseCount || 0)));
+  const nextLastUsedAt = lastUsedAt || new Date().toISOString();
+  sheet.getRange(row, 10, 1, 2).setValues([[nextCount, nextLastUsedAt]]);
+  return rowToItem_(sheet.getRange(row, 1, 1, HEADERS.length).getValues()[0]);
 }
 
 function deleteItem_(id) {
   if (!id) throw new Error('Thiếu ID dữ liệu cần xóa.');
   const sheet = getSheet_();
   const row = findRowById_(sheet, id);
-  if (!row) throw new Error('Không tìm thấy dữ liệu cần xóa.');
+  if (!row) return; // Idempotent: retry/delete mục chưa từng sync vẫn được xem là thành công.
   sheet.deleteRow(row);
 }
 
@@ -119,6 +176,7 @@ function findRowById_(sheet, id) {
 function rowToItem_(row) {
   const createdAt = row[5] instanceof Date ? row[5].toISOString() : String(row[5] || '');
   const updatedAt = row[6] instanceof Date ? row[6].toISOString() : String(row[6] || createdAt);
+  const lastUsedAt = row[10] instanceof Date ? row[10].toISOString() : String(row[10] || '');
   return {
     id: String(row[0] || ''),
     type: String(row[1] || 'other'),
@@ -126,7 +184,11 @@ function rowToItem_(row) {
     detail: String(row[3] || ''),
     url: String(row[4] || ''),
     createdAt: createdAt,
-    updatedAt: updatedAt
+    updatedAt: updatedAt,
+    tags: normalizeTags_(row[7]),
+    pinned: row[8] === true || String(row[8]).toLowerCase() === 'true',
+    useCount: Math.max(0, Number(row[9] || 0)),
+    lastUsedAt: lastUsedAt
   };
 }
 
@@ -138,7 +200,10 @@ function listItems_() {
   return values
     .filter(function(row) { return row[0]; })
     .map(rowToItem_)
-    .sort(function(a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
+    .sort(function(a, b) {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      return String(b.createdAt).localeCompare(String(a.createdAt));
+    });
 }
 
 function getSheet_() {
@@ -150,7 +215,8 @@ function getSheet_() {
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
     sheet.setFrozenRows(1);
-  } else if (sheet.getLastColumn() < HEADERS.length) {
+  } else {
+    // V1.3 tự mở rộng schema cũ V1.2, không xóa dữ liệu hiện có.
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
   }
   return sheet;
