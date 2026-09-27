@@ -1,31 +1,32 @@
-# DriveVault Mobile V1.1.0
+# DriveVault Mobile V1.2.0
 
-Phiên bản nâng cấp của DriveVault theo hướng mobile-first, tối ưu thao tác nhanh và quản lý nội dung bằng Google Sheets trên Google Drive.
+Bản nâng cấp tập trung vào tốc độ lưu dữ liệu, swipe action, floating controls và trải nghiệm bottom sheet trên mobile.
 
-## Nâng cấp V1.1.0 – Fast Capture & Mobile UX
+## Nâng cấp V1.2.0 – Instant Save & Mobile Polish
 
-- Tối ưu tốc độ thêm mới: sau khi Google Apps Script trả bản ghi vừa tạo, giao diện cập nhật ngay, **không tải lại toàn bộ Google Sheet**.
-- Loại `Ảnh / Video` có thêm **Nội dung chi tiết**.
-- Swipe trái trên block để hiện **Sửa / Xóa**.
-- Bấm vào block mở **bottom sheet** hiển thị toàn bộ nội dung.
-- Cho phép sửa dữ liệu và xóa dữ liệu trên Google Sheet.
-- Dark mode / Light mode, ghi nhớ lựa chọn trên thiết bị.
-- Dashboard mới: card hiện đại, thống kê nhanh, search, filter, action rõ ràng, tối ưu thao tác một tay.
-- Xử lý lỗi API tốt hơn khi Google Apps Script trả HTML thay vì JSON.
+- Card chuyển sang nền solid, không còn nhìn xuyên thấy nút Sửa/Xóa phía dưới.
+- Sửa/Xóa chỉ hiển thị khi người dùng thực sự swipe trái.
+- Nút Thêm mới thu nhỏ thành FAB `+` ở góc phải dưới.
+- Sau 0,5 giây không scroll, cụm floating button giảm opacity; khi đang scroll opacity trở lại 100%.
+- Có nút mũi tên lên đầu trang; chỉ hiện khi đã scroll xuống và tự ẩn khi về đầu trang.
+- Bottom sheet khóa scroll của background; chỉ phần sheet được phép cuộn.
+- Thêm mới dùng optimistic UI: block xuất hiện ngay, không chờ Google Apps Script hoàn tất.
+- Request tạo mới dùng ID do client sinh để retry an toàn, tránh ghi trùng nếu Apps Script phản hồi chậm.
+- API có timeout, retry một lần cho create, kiểm tra URL `/exec` và thông báo lỗi JSON rõ hơn.
+- API key được trim ở cả frontend server và Apps Script để tránh lỗi do khoảng trắng/ký tự xuống dòng.
 
-## Quan trọng khi nâng cấp từ V1.0.0
-
-Frontend V1.1.0 cần backend Apps Script mới để dùng được **Sửa / Xóa**.
+## Bắt buộc khi nâng cấp từ V1.1.0
 
 1. Mở Google Sheet database hiện tại.
 2. Vào **Extensions → Apps Script**.
-3. Thay code cũ bằng toàn bộ nội dung file `google-apps-script/Code.gs` của V1.1.0.
-4. Chọn **Deploy → Manage deployments → Edit**.
-5. Chọn **New version** rồi Deploy lại.
-6. Nếu URL `/exec` không đổi thì không cần đổi `GOOGLE_SCRIPT_URL` trên Vercel.
-7. Redeploy frontend Vercel với source V1.1.0.
+3. Thay code cũ bằng toàn bộ nội dung `google-apps-script/Code.gs` của V1.2.0.
+4. Vào **Deploy → Manage deployments → Edit**.
+5. Chọn **New version** và Deploy.
+6. Giữ nguyên Web App URL nếu vẫn kết thúc bằng `/exec`.
+7. Kiểm tra Script Property `DRIVEVAULT_API_KEY` giống hệt Environment Variable cùng tên trên Vercel.
+8. Deploy source V1.2.0 lên Vercel.
 
-Tab `Vault` cũ vẫn dùng được. Cột `updatedAt` sẽ được bổ sung tự động khi backend V1.1.0 chạy.
+> Dữ liệu V1.1.0 vẫn dùng nguyên, không cần migrate hay tạo Sheet mới.
 
 ## Cấu hình Vercel
 
@@ -60,4 +61,4 @@ Import repository/folder lên Vercel, khai báo Environment Variables rồi Depl
 
 ## Phiên bản
 
-`V1.1.0 - Fast Capture & Mobile UX`
+`V1.2.0 - Instant Save & Mobile Polish`

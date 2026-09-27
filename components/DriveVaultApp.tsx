@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowUp,
   Clipboard,
   ExternalLink,
   FileText,
@@ -45,6 +46,21 @@ function formatDate(value: string) {
   return d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
+async function readJsonResponse(response: Response) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const preview = text.replace(/\s+/g, " ").slice(0, 140);
+    throw new Error(`API không trả JSON hợp lệ${preview ? `: ${preview}` : "."}`);
+  }
+}
+
+function createClientId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `dv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function SwipeCard({
   item,
   onOpen,
@@ -64,6 +80,7 @@ function SwipeCard({
   const moved = useRef(false);
   const meta = typeMeta[item.type] || typeMeta.other;
   const Icon = meta.icon;
+  const actionsVisible = offset < -2;
 
   function pointerDown(e: React.PointerEvent) {
     startX.current = e.clientX;
@@ -88,9 +105,10 @@ function SwipeCard({
 
   return (
     <div className="swipe-row">
-      <div className="swipe-actions" aria-hidden={offset === 0}>
+      <div className={`swipe-actions ${actionsVisible ? "visible" : ""}`} aria-hidden={!actionsVisible}>
         <button
           className="swipe-edit"
+          tabIndex={actionsVisible ? 0 : -1}
           aria-label={`Sửa ${item.name}`}
           onClick={() => { setOffset(0); onEdit(); }}
         >
@@ -99,6 +117,7 @@ function SwipeCard({
         </button>
         <button
           className="swipe-delete"
+          tabIndex={actionsVisible ? 0 : -1}
           aria-label={`Xóa ${item.name}`}
           onClick={() => { setOffset(0); onDelete(); }}
         >
@@ -160,13 +179,16 @@ export default function DriveVaultApp() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [selected, setSelected] = useState<VaultItem | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("dark");
+  const [floatingActive, setFloatingActive] = useState(false);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  const scrollIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadItems = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
       const response = await fetch("/api/items", { cache: "no-store" });
-      const data = await response.json();
+      const data = await readJsonResponse(response);
       if (!response.ok || !data.ok) throw new Error(data.error || "Không tải được dữ liệu.");
       setItems(Array.isArray(data.items) ? data.items : []);
     } catch (e) {
@@ -188,6 +210,50 @@ export default function DriveVaultApp() {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem("drivevault-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const onScroll = () => {
+      setShowScrollTop(window.scrollY > 180);
+      setFloatingActive(true);
+      if (scrollIdleTimer.current) clearTimeout(scrollIdleTimer.current);
+      scrollIdleTimer.current = setTimeout(() => setFloatingActive(false), 500);
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (scrollIdleTimer.current) clearTimeout(scrollIdleTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!showForm && !selected) return;
+    const scrollY = window.scrollY;
+    const body = document.body;
+    const previous = {
+      position: body.style.position,
+      top: body.style.top,
+      left: body.style.left,
+      right: body.style.right,
+      width: body.style.width,
+      overflow: body.style.overflow,
+    };
+    body.style.position = "fixed";
+    body.style.top = `-${scrollY}px`;
+    body.style.left = "0";
+    body.style.right = "0";
+    body.style.width = "100%";
+    body.style.overflow = "hidden";
+    return () => {
+      body.style.position = previous.position;
+      body.style.top = previous.top;
+      body.style.left = previous.left;
+      body.style.right = previous.right;
+      body.style.width = previous.width;
+      body.style.overflow = previous.overflow;
+      window.scrollTo(0, scrollY);
+    };
+  }, [showForm, selected]);
 
   const filtered = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -224,6 +290,17 @@ export default function DriveVaultApp() {
     setShowForm(true);
   }
 
+  async function persistCreate(item: VaultItem) {
+    const response = await fetch("/api/items", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ item }),
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok || !data.ok || !data.item) throw new Error(data.error || "Không lưu được dữ liệu.");
+    setItems((current) => current.map((x) => x.id === item.id ? data.item : x));
+  }
+
   async function saveItem(e: React.FormEvent) {
     e.preventDefault();
     const name = form.name.trim();
@@ -234,26 +311,49 @@ export default function DriveVaultApp() {
     if (form.type === "content" && !detail) return setError("Vui lòng nhập nội dung chi tiết.");
     if (form.type === "other" && !detail && !url) return setError("Loại Khác cần ít nhất nội dung hoặc đường link.");
 
-    setSaving(true);
     setError("");
+
+    if (!editingId) {
+      const now = new Date().toISOString();
+      const optimisticItem: VaultItem = {
+        id: createClientId(),
+        type: form.type,
+        name,
+        detail,
+        url,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      // Hiển thị ngay, không bắt người dùng chờ Apps Script/Google Sheet phản hồi.
+      setItems((current) => [optimisticItem, ...current]);
+      setForm(emptyForm);
+      setShowForm(false);
+      notify("Đã thêm, đang đồng bộ Drive...");
+
+      try {
+        await persistCreate(optimisticItem);
+        notify("Đã đồng bộ Google Drive");
+      } catch (err) {
+        setItems((current) => current.filter((x) => x.id !== optimisticItem.id));
+        setError(err instanceof Error ? `Không đồng bộ được dữ liệu: ${err.message}` : "Không đồng bộ được dữ liệu.");
+        notify("Đồng bộ thất bại");
+      }
+      return;
+    }
+
+    setSaving(true);
     try {
-      const payload = { id: editingId || undefined, type: form.type, name, detail, url };
+      const payload = { id: editingId, type: form.type, name, detail, url };
       const response = await fetch("/api/items", {
-        method: editingId ? "PUT" : "POST",
+        method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const data = await response.json();
+      const data = await readJsonResponse(response);
       if (!response.ok || !data.ok || !data.item) throw new Error(data.error || "Không lưu được dữ liệu.");
-
-      // V1.1.0: cập nhật danh sách ngay bằng record backend trả về, không GET lại toàn bộ Google Sheet.
-      if (editingId) {
-        setItems((current) => current.map((item) => item.id === editingId ? data.item : item));
-        notify("Đã cập nhật");
-      } else {
-        setItems((current) => [data.item, ...current]);
-        notify("Đã lưu");
-      }
+      setItems((current) => current.map((item) => item.id === editingId ? data.item : item));
+      notify("Đã cập nhật");
       setForm(emptyForm);
       setEditingId(null);
       setShowForm(false);
@@ -275,7 +375,7 @@ export default function DriveVaultApp() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ id: item.id }),
       });
-      const data = await response.json();
+      const data = await readJsonResponse(response);
       if (!response.ok || !data.ok) throw new Error(data.error || "Không xóa được dữ liệu.");
       setItems((current) => current.filter((x) => x.id !== item.id));
       if (selected?.id === item.id) setSelected(null);
@@ -291,12 +391,12 @@ export default function DriveVaultApp() {
     <main className="shell">
       <header className="topbar">
         <div>
-          <div className="eyebrow">DRIVEVAULT · V1.1</div>
+          <div className="eyebrow">DRIVEVAULT · V1.2</div>
           <h1>Kho dùng nhanh</h1>
           <p>Lưu nội dung và link Drive để mở hoặc sao chép chỉ trong vài giây.</p>
         </div>
         <div className="top-actions">
-          <button className="icon-button" aria-label="Đổi giao diện sáng tối" onClick={() => setTheme((t) => t === "dark" ? "light" : "dark")}>
+          <button className="icon-button" aria-label="Đổi giao diện sáng tối" onClick={() => setTheme((t) => t === "dark" ? "light" : "dark") }>
             {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
           </button>
           <button className="icon-button" aria-label="Tải lại" onClick={loadItems} disabled={loading}>
@@ -331,7 +431,7 @@ export default function DriveVaultApp() {
         {loading ? (
           <div className="state"><Loader2 className="spin" /><span>Đang tải dữ liệu...</span></div>
         ) : filtered.length === 0 ? (
-          <div className="empty"><Layers3 size={34} /><strong>Chưa có dữ liệu phù hợp</strong><span>Bấm “Thêm mới” để tạo mục lưu trữ.</span></div>
+          <div className="empty"><Layers3 size={34} /><strong>Chưa có dữ liệu phù hợp</strong><span>Bấm nút + để tạo mục lưu trữ.</span></div>
         ) : filtered.map((item) => (
           <SwipeCard
             key={item.id}
@@ -344,7 +444,14 @@ export default function DriveVaultApp() {
         ))}
       </section>
 
-      <button className="fab" onClick={openCreate}><Plus size={22} /> Thêm mới</button>
+      <div className={`floating-controls ${floatingActive ? "active" : "idle"}`}>
+        {showScrollTop && (
+          <button className="scroll-top-button" aria-label="Lên đầu trang" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>
+            <ArrowUp size={20} />
+          </button>
+        )}
+        <button className="fab" onClick={openCreate} aria-label="Thêm mới"><Plus size={22} /></button>
+      </div>
 
       {showForm && (
         <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) setShowForm(false); }}>

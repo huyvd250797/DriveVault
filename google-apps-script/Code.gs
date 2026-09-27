@@ -1,5 +1,5 @@
 /**
- * DriveVault V1.1.0 - Google Apps Script backend
+ * DriveVault V1.2.0 - Google Apps Script backend
  * Gắn script này với Google Sheet dùng làm database.
  */
 
@@ -53,20 +53,25 @@ function normalizeItem_(input, requireId) {
 
 function createItem_(input) {
   const clean = normalizeItem_(input, false);
+  const sheet = getSheet_();
+
+  // V1.2: ID do client sinh để request create có thể retry an toàn mà không tạo trùng dữ liệu.
+  const id = clean.id || Utilities.getUuid();
+  const existingRow = clean.id ? findRowById_(sheet, clean.id) : 0;
+  if (existingRow) return rowToItem_(sheet.getRange(existingRow, 1, 1, HEADERS.length).getValues()[0]);
+
   const now = new Date().toISOString();
   const item = {
-    id: Utilities.getUuid(),
+    id: id,
     type: clean.type,
     name: clean.name,
     detail: clean.detail,
     url: clean.url,
-    createdAt: now,
-    updatedAt: now
+    createdAt: String(input.createdAt || now),
+    updatedAt: String(input.updatedAt || now)
   };
 
-  const sheet = getSheet_();
-  const row = sheet.getLastRow() + 1;
-  sheet.getRange(row, 1, 1, HEADERS.length).setValues([[
+  sheet.getRange(sheet.getLastRow() + 1, 1, 1, HEADERS.length).setValues([[
     item.id, item.type, item.name, item.detail, item.url, item.createdAt, item.updatedAt
   ]]);
   return item;
@@ -111,6 +116,20 @@ function findRowById_(sheet, id) {
   return finder ? finder.getRow() : 0;
 }
 
+function rowToItem_(row) {
+  const createdAt = row[5] instanceof Date ? row[5].toISOString() : String(row[5] || '');
+  const updatedAt = row[6] instanceof Date ? row[6].toISOString() : String(row[6] || createdAt);
+  return {
+    id: String(row[0] || ''),
+    type: String(row[1] || 'other'),
+    name: String(row[2] || ''),
+    detail: String(row[3] || ''),
+    url: String(row[4] || ''),
+    createdAt: createdAt,
+    updatedAt: updatedAt
+  };
+}
+
 function listItems_() {
   const sheet = getSheet_();
   const lastRow = sheet.getLastRow();
@@ -118,19 +137,7 @@ function listItems_() {
   const values = sheet.getRange(2, 1, lastRow - 1, HEADERS.length).getValues();
   return values
     .filter(function(row) { return row[0]; })
-    .map(function(row) {
-      const createdAt = row[5] instanceof Date ? row[5].toISOString() : String(row[5] || '');
-      const updatedAt = row[6] instanceof Date ? row[6].toISOString() : String(row[6] || createdAt);
-      return {
-        id: String(row[0] || ''),
-        type: String(row[1] || 'other'),
-        name: String(row[2] || ''),
-        detail: String(row[3] || ''),
-        url: String(row[4] || ''),
-        createdAt: createdAt,
-        updatedAt: updatedAt
-      };
-    })
+    .map(rowToItem_)
     .sort(function(a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
 }
 
@@ -150,9 +157,10 @@ function getSheet_() {
 }
 
 function assertApiKey_(provided) {
-  const expected = PropertiesService.getScriptProperties().getProperty('DRIVEVAULT_API_KEY') || '';
+  const expected = (PropertiesService.getScriptProperties().getProperty('DRIVEVAULT_API_KEY') || '').trim();
+  const actual = String(provided || '').trim();
   if (!expected) throw new Error('Chưa cấu hình DRIVEVAULT_API_KEY trong Script Properties.');
-  if (provided !== expected) throw new Error('API key không hợp lệ.');
+  if (actual !== expected) throw new Error('API key không hợp lệ. Kiểm tra DRIVEVAULT_API_KEY ở Vercel và Apps Script Script Properties.');
 }
 
 function json_(data) {
