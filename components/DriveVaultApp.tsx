@@ -401,8 +401,8 @@ export default function DriveVaultApp() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkCollection, setBulkCollection] = useState("Chưa phân loại");
 
-  const scrollIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollIdleTimer = useRef<number | null>(null);
+  const toastTimer = useRef<number | null>(null);
   const queueRef = useRef<QueueOperation[]>([]);
   const itemsRef = useRef<VaultItem[]>([]);
   const flushingRef = useRef(false);
@@ -552,7 +552,7 @@ export default function DriveVaultApp() {
       setShowScrollTop(window.scrollY > 180);
       setFloatingActive(true);
       if (scrollIdleTimer.current) clearTimeout(scrollIdleTimer.current);
-      scrollIdleTimer.current = setTimeout(() => setFloatingActive(false), 500);
+      scrollIdleTimer.current = window.setTimeout(() => setFloatingActive(false), 500);
     };
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
