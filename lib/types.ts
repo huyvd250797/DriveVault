@@ -7,6 +7,7 @@ export interface VaultItem {
   detail: string;
   url: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface CreateVaultItem {

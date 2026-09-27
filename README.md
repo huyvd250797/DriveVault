@@ -1,46 +1,52 @@
-# DriveVault Mobile V1.0.0
+# DriveVault Mobile V1.1.0
 
-Web app mobile-first để lưu nhanh nội dung dùng lại và link ảnh/video Google Drive.
+Phiên bản nâng cấp của DriveVault theo hướng mobile-first, tối ưu thao tác nhanh và quản lý nội dung bằng Google Sheets trên Google Drive.
 
-## Chức năng
+## Nâng cấp V1.1.0 – Fast Capture & Mobile UX
 
-- 3 loại lưu trữ: `Ảnh / Video`, `Nội dung`, `Khác`.
-- Thêm mới bằng modal tối ưu điện thoại.
-- Dashboard dạng block/card, mới nhất lên trước.
-- Lọc theo loại và tìm kiếm theo tên/nội dung.
-- `Nội dung`: sao chép toàn bộ nội dung chi tiết một chạm.
-- `Ảnh / Video`: mở link Google Drive ở tab mới.
-- `Khác`: có thể lưu nội dung, link hoặc cả hai.
-- Backend là Google Apps Script; dữ liệu nằm trong Google Sheets trên Google Drive.
-- Frontend Next.js, deploy Vercel.
+- Tối ưu tốc độ thêm mới: sau khi Google Apps Script trả bản ghi vừa tạo, giao diện cập nhật ngay, **không tải lại toàn bộ Google Sheet**.
+- Loại `Ảnh / Video` có thêm **Nội dung chi tiết**.
+- Swipe trái trên block để hiện **Sửa / Xóa**.
+- Bấm vào block mở **bottom sheet** hiển thị toàn bộ nội dung.
+- Cho phép sửa dữ liệu và xóa dữ liệu trên Google Sheet.
+- Dark mode / Light mode, ghi nhớ lựa chọn trên thiết bị.
+- Dashboard mới: card hiện đại, thống kê nhanh, search, filter, action rõ ràng, tối ưu thao tác một tay.
+- Xử lý lỗi API tốt hơn khi Google Apps Script trả HTML thay vì JSON.
 
-## 1. Tạo Google Sheet làm database
+## Quan trọng khi nâng cấp từ V1.0.0
 
-1. Tạo một Google Sheet mới, ví dụ `DriveVault Database`.
-2. Trong Sheet chọn **Extensions → Apps Script**.
-3. Xóa code mặc định và dán toàn bộ file `google-apps-script/Code.gs`.
-4. Vào **Project Settings → Script Properties** tạo:
-   - Property: `DRIVEVAULT_API_KEY`
-   - Value: một chuỗi bí mật dài, ví dụ chuỗi random 32+ ký tự.
-5. **Deploy → New deployment → Web app**.
-   - Execute as: **Me**.
-   - Who has access: chọn mức truy cập phù hợp với tài khoản của bạn. Với frontend public trên Vercel, endpoint phải nhận request từ Vercel; API key trong payload là lớp bảo vệ ứng dụng.
-6. Copy URL dạng `https://script.google.com/macros/s/.../exec`.
+Frontend V1.1.0 cần backend Apps Script mới để dùng được **Sửa / Xóa**.
 
-> Tab `Vault` và các cột sẽ tự tạo ở lần gọi đầu tiên.
+1. Mở Google Sheet database hiện tại.
+2. Vào **Extensions → Apps Script**.
+3. Thay code cũ bằng toàn bộ nội dung file `google-apps-script/Code.gs` của V1.1.0.
+4. Chọn **Deploy → Manage deployments → Edit**.
+5. Chọn **New version** rồi Deploy lại.
+6. Nếu URL `/exec` không đổi thì không cần đổi `GOOGLE_SCRIPT_URL` trên Vercel.
+7. Redeploy frontend Vercel với source V1.1.0.
 
-## 2. Cấu hình Vercel
+Tab `Vault` cũ vẫn dùng được. Cột `updatedAt` sẽ được bổ sung tự động khi backend V1.1.0 chạy.
 
-Tạo 2 Environment Variables:
+## Cấu hình Vercel
 
 ```env
 GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec
 DRIVEVAULT_API_KEY=CHUOI_BI_MAT_GIONG_TRONG_SCRIPT_PROPERTIES
 ```
 
-Sau đó import repo/folder này vào Vercel và deploy.
+## Cấu trúc dữ liệu
 
-## 3. Chạy local
+| id | type | name | detail | url | createdAt | updatedAt |
+|---|---|---|---|---|---|---|
+| UUID | media/content/other | Tên | Nội dung chi tiết | Link Drive | ISO datetime | ISO datetime |
+
+## Quy tắc từng loại
+
+- **Ảnh / Video**: Tên + Link Drive bắt buộc; nội dung chi tiết tùy chọn.
+- **Nội dung**: Tên + nội dung chi tiết bắt buộc; hỗ trợ copy nhanh.
+- **Khác**: Tên bắt buộc; cần ít nhất nội dung hoặc link.
+
+## Chạy local
 
 ```bash
 npm install
@@ -48,18 +54,10 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Mở `http://localhost:3000`.
+## Deploy Vercel
 
-## Lưu ý link Google Drive
-
-App lưu nguyên URL bạn nhập. Nếu cần người khác mở được file, hãy cấu hình quyền chia sẻ của file/folder trên Google Drive tương ứng.
-
-## Cấu trúc dữ liệu Google Sheet
-
-| id | type | name | detail | url | createdAt |
-|---|---|---|---|---|---|
-| UUID | media/content/other | Tên | Nội dung | Link Drive | ISO datetime |
+Import repository/folder lên Vercel, khai báo Environment Variables rồi Deploy.
 
 ## Phiên bản
 
-`V1.0.0 - Mobile Quick Storage`
+`V1.1.0 - Fast Capture & Mobile UX`

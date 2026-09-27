@@ -12,12 +12,15 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   viewportFit: "cover",
-  themeColor: "#0b1220",
+  themeColor: [
+    { media: "(prefers-color-scheme: dark)", color: "#0a0c11" },
+    { media: "(prefers-color-scheme: light)", color: "#f4f6f9" },
+  ],
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="vi">
+    <html lang="vi" suppressHydrationWarning>
       <body>{children}</body>
     </html>
   );
