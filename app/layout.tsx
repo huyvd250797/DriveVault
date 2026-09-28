@@ -3,8 +3,21 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "DriveVault",
-  description: "Kho lưu trữ nhanh dùng Google Drive / Google Sheets",
+  description: "Personal Vault Pro & Quick Capture - kho lưu trữ cá nhân dùng nhanh.",
   applicationName: "DriveVault",
+  manifest: "/manifest.webmanifest",
+  icons: {
+    icon: [
+      { url: "/icons/favicon-64.png", type: "image/png", sizes: "64x64" },
+      { url: "/icons/icon-192.png", type: "image/png", sizes: "192x192" },
+    ],
+    apple: [{ url: "/icons/apple-touch-icon.png", type: "image/png", sizes: "180x180" }],
+  },
+  appleWebApp: {
+    capable: true,
+    title: "DriveVault",
+    statusBarStyle: "black-translucent",
+  },
 };
 
 export const viewport: Viewport = {

@@ -1,5 +1,5 @@
 /**
- * DriveVault V1.7.0 - Security & App Lock + Media Pro
+ * DriveVault V2.0.0 - Personal Vault Pro & Quick Capture
  * Google Sheets backend.
  */
 
@@ -495,7 +495,7 @@ function getSheet_() {
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
     sheet.setFrozenRows(1);
   } else {
-    // V1.7 tự mở rộng schema với thumbnail + protected; dữ liệu cũ được giữ nguyên.
+    // V2.0 giữ nguyên schema V1.7; dữ liệu cũ được giữ nguyên, frontend bổ sung Quick Capture/PWA cục bộ.
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
   }
   return sheet;

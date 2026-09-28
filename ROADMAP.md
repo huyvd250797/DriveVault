@@ -1,23 +1,35 @@
 # DriveVault Roadmap
 
-- ✅ V1.0.0 – Mobile Quick Storage
-- ✅ V1.1.0 – Fast Capture & Mobile UX
-- ✅ V1.2.0 – Instant Save & Mobile Polish
-- ✅ V1.3.0 – Smart Library & Reliability
-- ✅ V1.4.0 – Search & Organization Pro
-- ✅ V1.5.0 – Backup & Data Portability
-- ✅ V1.6.0 – Media & Link Intelligence
-- ✅ V1.7.0 – Security & App Lock
-  - PIN/App Lock bằng PBKDF2 hash + salt trên thiết bị.
-  - Auto-lock và Lock Now.
-  - Protected item yêu cầu PIN khi mở.
-  - In-app video player có hình + tiếng và fullscreen.
-  - In-app image viewer + fullscreen.
-  - Kéo timeline video Drive để chọn custom thumbnail cho block.
-  - Media proxy hỗ trợ Range request.
-- ⏭️ V2.0.0 – Google Account & Native Drive Integration
-  - Google Sign-In / OAuth.
-  - Google Drive Picker.
-  - Upload ảnh/video trực tiếp từ app lên Drive.
-  - Quản lý permission theo tài khoản.
-  - Đồng bộ đa thiết bị tốt hơn.
+- ✅ **V1.0.0 – Mobile Quick Storage**
+  - Lưu Ảnh/Video, Nội dung, Khác; copy nhanh; mở link Drive.
+- ✅ **V1.1.0 – Fast Capture & Mobile UX**
+  - Swipe sửa/xóa, bottom sheet, dark/light mode.
+- ✅ **V1.2.0 – Instant Save & Mobile Polish**
+  - Optimistic save, retry/idempotency, floating controls, khóa scroll nền.
+- ✅ **V1.3.0 – Smart Library & Reliability**
+  - Tag, pin, recent/frequent, offline queue, sync state, undo delete.
+- ✅ **V1.4.0 – Search & Organization Pro**
+  - Advanced search, sort, phân loại/collection, archive, bulk actions.
+- ✅ **V1.5.0 – Backup & Data Portability**
+  - Export/import, snapshot/restore, diagnostics, recycle bin.
+- ✅ **V1.6.0 – Media & Link Intelligence**
+  - Media/link intelligence, phân loại, dashboard gọn, preview media.
+- ✅ **V1.7.0 – Security & App Lock + Media Pro**
+  - PIN App Lock, protected item, fullscreen image/video, custom video thumbnail.
+- ✅ **V2.0.0 – Personal Vault Pro & Quick Capture**
+  - Không đăng nhập; tiếp tục dùng Google Sheets/Drive làm kho dữ liệu cá nhân.
+  - PWA cài như app, dùng logo DriveVault làm app icon/favicon/Apple icon.
+  - Quick Capture nhớ loại/phân loại/tag gần nhất.
+  - Quick Templates cục bộ trên thiết bị.
+  - Smart Link nhận diện Drive/YouTube/Shopee/Lazada/TikTok/link web và gợi ý loại/phân loại/tag.
+  - PWA Share Target: chia sẻ link/text từ điện thoại vào DriveVault để mở form đã điền sẵn.
+  - Duplicate warning trước khi lưu.
+  - Personal dashboard tùy biến: Đã ghim, Gần đây, Dùng nhiều, phân loại yêu thích.
+  - Compact / Comfortable density.
+  - Cache-first startup + service worker app shell.
+- ⏭️ **V2.1.0 – Media Library Pro**
+  - Grid media riêng cho ảnh/video.
+  - Album/Gallery fullscreen và swipe ảnh.
+  - Video nhớ vị trí xem dở.
+  - Cover/thumbnail manager nâng cao.
+  - Lọc Ảnh / Video độc lập và bulk media actions.

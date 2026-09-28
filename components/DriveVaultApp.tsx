@@ -51,11 +51,14 @@ import {
 } from "lucide-react";
 import type { BackupSnapshot, CreateVaultItem, ImportReport, StorageType, SyncState, VaultItem } from "@/lib/types";
 
-const CACHE_KEY = "drivevault-v170-items";
-const QUEUE_KEY = "drivevault-v170-sync-queue";
-const LEGACY_CACHE_KEY = "drivevault-v160-items";
-const LEGACY_QUEUE_KEY = "drivevault-v160-sync-queue";
+const CACHE_KEY = "drivevault-v200-items";
+const QUEUE_KEY = "drivevault-v200-sync-queue";
+const LEGACY_CACHE_KEY = "drivevault-v170-items";
+const LEGACY_QUEUE_KEY = "drivevault-v170-sync-queue";
 const SECURITY_KEY = "drivevault-v170-security";
+const QUICK_PREFS_KEY = "drivevault-v200-quick-prefs";
+const QUICK_TEMPLATES_KEY = "drivevault-v200-quick-templates";
+const HOME_CONFIG_KEY = "drivevault-v200-home-config";
 const DELETE_UNDO_MS = 5000;
 
 const typeMeta: Record<StorageType, { label: string; icon: typeof ImageIcon; className: string }> = {
@@ -69,6 +72,31 @@ type SortMode = "smart" | "newest" | "oldest" | "name-az" | "name-za" | "recent"
 type SearchField = "name" | "detail" | "url" | "tags" | "collection";
 type BulkMode = "archive" | "restore" | "pin" | "unpin" | "move" | "delete" | "restoreTrash" | "purge";
 type LinkFilter = "all" | "with" | "without";
+type DensityMode = "compact" | "comfortable";
+
+type QuickTemplate = {
+  id: string;
+  name: string;
+  type: StorageType;
+  detail: string;
+  url: string;
+  tags: string[];
+  collection: string;
+};
+
+type QuickPrefs = { type: StorageType; collection: string; tags: string[] };
+type HomeConfig = {
+  showPinned: boolean;
+  showRecent: boolean;
+  showFrequent: boolean;
+  favoriteCollections: string[];
+  density: DensityMode;
+};
+
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+};
 
 type QueueOperation = {
   opId: string;
@@ -97,6 +125,33 @@ const emptyForm: CreateVaultItem = {
   thumbnail: "",
   protected: false,
 };
+
+const defaultHomeConfig: HomeConfig = {
+  showPinned: true,
+  showRecent: true,
+  showFrequent: false,
+  favoriteCollections: [],
+  density: "comfortable",
+};
+
+function readQuickPrefs(): QuickPrefs {
+  if (typeof window === "undefined") return { type: "content", collection: "Chưa phân loại", tags: [] };
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(QUICK_PREFS_KEY) || "null") as Partial<QuickPrefs> | null;
+    return {
+      type: (["media", "content", "other"].includes(String(parsed?.type || "")) ? parsed?.type : "content") as StorageType,
+      collection: normalizeCollection(parsed?.collection),
+      tags: normalizeTags(Array.isArray(parsed?.tags) ? parsed.tags : []),
+    };
+  } catch {
+    return { type: "content", collection: "Chưa phân loại", tags: [] };
+  }
+}
+
+function extractFirstUrl(value: string) {
+  const match = value.match(/https?:\/\/[^\s]+/i);
+  return match?.[0]?.replace(/[),.;!?]+$/, "") || "";
+}
 
 function normalizeUrl(value: string) {
   if (!value.trim()) return "";
@@ -383,6 +438,24 @@ function analyzeLink(value: string): LinkIntel {
   } catch {
     return { kind: "invalid", provider: "", label: "Link không hợp lệ" };
   }
+}
+
+function inferQuickCapture(value: string): { type: StorageType; collection: string; tags: string[]; label: string } {
+  const normalized = normalizeUrl(value);
+  if (!normalized) return { type: "content", collection: "Chưa phân loại", tags: [], label: "Nội dung" };
+  const intel = analyzeLink(normalized);
+  let host = "";
+  try { host = new URL(normalized).hostname.toLowerCase().replace(/^www\./, ""); } catch {}
+
+  if (host.includes("shopee.")) return { type: "other", collection: "Shopee", tags: ["shopee", "mua sắm"], label: "Shopee" };
+  if (host.includes("lazada.")) return { type: "other", collection: "Mua sắm", tags: ["lazada", "mua sắm"], label: "Lazada" };
+  if (host.includes("tiktok.")) return { type: "media", collection: "Media", tags: ["video", "tiktok"], label: "TikTok" };
+  if (intel.kind === "youtube") return { type: "media", collection: "Media", tags: ["video", "youtube"], label: "YouTube" };
+  if (intel.kind === "drive-file") return { type: "media", collection: "Media", tags: ["google drive"], label: "Google Drive" };
+  if (intel.kind === "direct-image") return { type: "media", collection: "Media", tags: ["ảnh"], label: "Ảnh" };
+  if (intel.kind === "direct-video") return { type: "media", collection: "Media", tags: ["video"], label: "Video" };
+  if (intel.kind === "drive-folder") return { type: "other", collection: "Google Drive", tags: ["google drive", "folder"], label: "Thư mục Drive" };
+  return { type: "other", collection: "Liên kết", tags: ["link"], label: intel.provider || "Liên kết" };
 }
 
 function isSuspiciousDriveLink(item: VaultItem) {
@@ -703,6 +776,11 @@ export default function DriveVaultApp() {
   const [protectedTargetId, setProtectedTargetId] = useState<string | null>(null);
   const [protectedPin, setProtectedPin] = useState("");
   const [protectedError, setProtectedError] = useState("");
+  const [templates, setTemplates] = useState<QuickTemplate[]>([]);
+  const [homeConfig, setHomeConfig] = useState<HomeConfig>(defaultHomeConfig);
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [duplicateCandidate, setDuplicateCandidate] = useState<VaultItem | null>(null);
+  const [duplicateOverride, setDuplicateOverride] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const scrollIdleTimer = useRef<number | null>(null);
@@ -724,6 +802,69 @@ export default function DriveVaultApp() {
     setToast(message);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(""), 1900);
+  }
+
+  function persistHomeConfig(next: HomeConfig) {
+    setHomeConfig(next);
+    try { window.localStorage.setItem(HOME_CONFIG_KEY, JSON.stringify(next)); } catch {}
+  }
+
+  function toggleFavoriteCollection(name: string) {
+    const exists = homeConfig.favoriteCollections.includes(name);
+    persistHomeConfig({
+      ...homeConfig,
+      favoriteCollections: exists
+        ? homeConfig.favoriteCollections.filter((value) => value !== name)
+        : [...homeConfig.favoriteCollections, name].slice(0, 8),
+    });
+  }
+
+  function writeTemplates(next: QuickTemplate[]) {
+    setTemplates(next);
+    try { window.localStorage.setItem(QUICK_TEMPLATES_KEY, JSON.stringify(next)); } catch {}
+  }
+
+  function saveCurrentAsTemplate() {
+    const templateName = form.name.trim();
+    if (!templateName) return notify("Nhập tên trước khi lưu thành mẫu");
+    const next: QuickTemplate = {
+      id: createClientId(),
+      name: templateName.slice(0, 80),
+      type: form.type,
+      detail: String(form.detail || ""),
+      url: String(form.url || ""),
+      tags: normalizeTags(tagText),
+      collection: normalizeCollection(form.collection),
+    };
+    writeTemplates([next, ...templates].slice(0, 20));
+    notify("Đã lưu mẫu Quick Capture");
+  }
+
+  function applyTemplate(template: QuickTemplate) {
+    setForm((current) => ({
+      ...current,
+      type: template.type,
+      name: template.name,
+      detail: template.detail,
+      url: template.url,
+      tags: template.tags,
+      collection: template.collection,
+      thumbnail: "",
+    }));
+    setTagText(template.tags.join(", "));
+    notify(`Đã áp dụng mẫu ${template.name}`);
+  }
+
+  function removeTemplate(id: string) {
+    writeTemplates(templates.filter((template) => template.id !== id));
+  }
+
+  async function installApp() {
+    if (!installPrompt) return notify("Trình duyệt chưa cung cấp tùy chọn cài đặt");
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === "accepted") notify("Đã bắt đầu cài DriveVault");
+    setInstallPrompt(null);
   }
 
   async function verifyPin(pin: string, config = securityConfig) {
@@ -959,8 +1100,11 @@ export default function DriveVaultApp() {
     queueRef.current = readQueue();
     setPendingCount(queueRef.current.length);
     const cached = readLocalItems();
-    if (cached.length) setItems(applyQueueToItems(cached, queueRef.current));
-    // Migrate cache/queue V1.6 sang namespace V1.7 trước khi xóa key cũ.
+    if (cached.length) {
+      setItems(applyQueueToItems(cached, queueRef.current));
+      setLoading(false);
+    }
+    // V2.0 cache-first: migrate nguyên cache/queue V1.7 để mở app gần như tức thì.
     window.localStorage.setItem(QUEUE_KEY, JSON.stringify(queueRef.current));
     if (cached.length) window.localStorage.setItem(CACHE_KEY, JSON.stringify(cached));
     setOnline(navigator.onLine);
@@ -994,6 +1138,58 @@ export default function DriveVaultApp() {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem("drivevault-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    try {
+      const savedTemplates = JSON.parse(window.localStorage.getItem(QUICK_TEMPLATES_KEY) || "[]");
+      if (Array.isArray(savedTemplates)) setTemplates(savedTemplates.slice(0, 20));
+      const savedHome = JSON.parse(window.localStorage.getItem(HOME_CONFIG_KEY) || "null") as Partial<HomeConfig> | null;
+      if (savedHome) setHomeConfig({
+        ...defaultHomeConfig,
+        ...savedHome,
+        favoriteCollections: Array.isArray(savedHome.favoriteCollections) ? savedHome.favoriteCollections.map(String).slice(0, 8) : [],
+        density: savedHome.density === "compact" ? "compact" : "comfortable",
+      });
+    } catch {}
+
+    const onInstall = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+    window.addEventListener("beforeinstallprompt", onInstall);
+    if ("serviceWorker" in navigator) void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+
+    const params = new URLSearchParams(window.location.search);
+    const shouldQuickOpen = params.get("quick") === "1" || params.has("shareTitle") || params.has("shareText") || params.has("shareUrl");
+    if (shouldQuickOpen) {
+      const prefs = readQuickPrefs();
+      const sharedText = params.get("shareText") || "";
+      const sharedUrl = normalizeUrl(params.get("shareUrl") || extractFirstUrl(sharedText));
+      const suggestion = inferQuickCapture(sharedUrl);
+      const detail = sharedUrl ? sharedText.replace(sharedUrl, "").trim() : sharedText.trim();
+      const incomingTags = sharedUrl ? suggestion.tags : prefs.tags;
+      setEditingId(null);
+      setForm({
+        ...emptyForm,
+        type: sharedUrl ? suggestion.type : prefs.type,
+        name: (params.get("shareTitle") || detail.slice(0, 80) || (sharedUrl ? suggestion.label : "")).trim(),
+        detail,
+        url: sharedUrl,
+        tags: incomingTags,
+        collection: sharedUrl ? suggestion.collection : prefs.collection,
+      });
+      setTagText(incomingTags.join(", "));
+      setShowForm(true);
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+
+    return () => window.removeEventListener("beforeinstallprompt", onInstall);
+  }, []);
+
+  useEffect(() => {
+    setDuplicateCandidate(null);
+    setDuplicateOverride(false);
+  }, [form.name, form.detail, form.url]);
 
 
   useEffect(() => {
@@ -1096,10 +1292,35 @@ export default function DriveVaultApp() {
     });
   }, [items, typeFilter, libraryMode, selectedTag, selectedCollection, search, sortMode, dateFrom, dateTo, linkFilter, searchFields]);
 
+  function handleSmartUrlChange(value: string) {
+    const normalized = normalizeUrl(value);
+    const suggestion = inferQuickCapture(normalized);
+    const prefs = readQuickPrefs();
+    setForm((current) => {
+      const next = { ...current, url: value, thumbnail: value === current.url ? current.thumbnail : "" };
+      if (!editingId && normalized) {
+        next.type = suggestion.type;
+        const collectionUntouched = !current.collection || current.collection === "Chưa phân loại" || normalizeCollection(current.collection) === prefs.collection;
+        if (collectionUntouched) next.collection = suggestion.collection;
+      }
+      return next;
+    });
+    if (!editingId && normalized && suggestion.tags.length) {
+      const currentTags = normalizeTags(tagText);
+      const remembered = normalizeTags(prefs.tags);
+      const tagsUntouched = currentTags.join("|").toLowerCase() === remembered.join("|").toLowerCase();
+      if (tagsUntouched || currentTags.length === 0) setTagText(normalizeTags([...currentTags, ...suggestion.tags]).join(", "));
+    }
+  }
+
   function openCreate() {
+    const prefs = readQuickPrefs();
+    const collection = selectedCollection !== "all" ? selectedCollection : prefs.collection;
     setEditingId(null);
-    setForm({ ...emptyForm, collection: selectedCollection !== "all" ? selectedCollection : "Chưa phân loại" });
-    setTagText("");
+    setForm({ ...emptyForm, type: prefs.type, collection, tags: prefs.tags });
+    setTagText(prefs.tags.join(", "));
+    setDuplicateCandidate(null);
+    setDuplicateOverride(false);
     setError("");
     setShowForm(true);
   }
@@ -1109,6 +1330,8 @@ export default function DriveVaultApp() {
     setForm({ type: item.type, name: item.name, detail: item.detail, url: item.url, tags: item.tags, pinned: item.pinned, collection: item.collection, archived: item.archived, thumbnail: item.thumbnail, protected: item.protected });
     setTagText(item.tags.join(", "));
     setSelectedId(null);
+    setDuplicateCandidate(null);
+    setDuplicateOverride(false);
     setError("");
     setShowForm(true);
   }
@@ -1121,9 +1344,21 @@ export default function DriveVaultApp() {
     const tags = normalizeTags(tagText);
     const collection = normalizeCollection(form.collection);
     if (!name) return setError("Vui lòng nhập tên.");
-    if (form.type === "media" && !url) return setError("Ảnh / Video cần link Google Drive hợp lệ.");
+    if (form.type === "media" && !url) return setError("Ảnh / Video cần link hợp lệ.");
     if (form.type === "content" && !detail) return setError("Vui lòng nhập nội dung chi tiết.");
     if (form.type === "other" && !detail && !url) return setError("Loại Khác cần ít nhất nội dung hoặc đường link.");
+
+    const duplicateDraft = withDefaults({
+      id: editingId || "draft", type: form.type, name, detail, url, tags, collection,
+      pinned: Boolean(form.pinned), archived: false, deleted: false, deletedAt: "", useCount: 0, lastUsedAt: "",
+      thumbnail: String(form.thumbnail || ""), protected: Boolean(form.protected && securityConfig?.enabled), createdAt: new Date().toISOString(),
+    });
+    const duplicate = items.find((item) => item.id !== editingId && !item.deleted && normalizedDuplicateKey(item) === normalizedDuplicateKey(duplicateDraft));
+    if (duplicate && !duplicateOverride) {
+      setDuplicateCandidate(duplicate);
+      setError("");
+      return;
+    }
 
     setError("");
     const now = new Date().toISOString();
@@ -1136,7 +1371,8 @@ export default function DriveVaultApp() {
         createdAt: now, updatedAt: now, syncState: "pending",
       };
       setItems((current) => [optimisticItem, ...current]);
-      setForm(emptyForm); setTagText(""); setShowForm(false);
+      try { window.localStorage.setItem(QUICK_PREFS_KEY, JSON.stringify({ type: optimisticItem.type, collection: optimisticItem.collection, tags: optimisticItem.tags } satisfies QuickPrefs)); } catch {}
+      setForm(emptyForm); setTagText(""); setDuplicateCandidate(null); setDuplicateOverride(false); setShowForm(false);
       enqueue({ opId: createClientId(), type: "create", targetId: optimisticItem.id, item: optimisticItem });
       notify(online ? "Đã thêm · đang đồng bộ" : "Đã lưu offline · chờ đồng bộ");
       return;
@@ -1147,7 +1383,7 @@ export default function DriveVaultApp() {
     const updated: VaultItem = { ...current, type: form.type, name, detail, url, tags, collection, thumbnail: form.type === "media" ? String(form.thumbnail || "") : "", protected: Boolean(form.protected && securityConfig?.enabled), updatedAt: now, syncState: "pending" };
     setSaving(true);
     setItems((list) => list.map((item) => item.id === editingId ? updated : item));
-    setForm(emptyForm); setTagText(""); setEditingId(null); setShowForm(false);
+    setForm(emptyForm); setTagText(""); setDuplicateCandidate(null); setDuplicateOverride(false); setEditingId(null); setShowForm(false);
     enqueue({ opId: createClientId(), type: "update", targetId: updated.id, item: updated });
     setSaving(false);
     notify(online ? "Đã cập nhật · đang đồng bộ" : "Đã cập nhật offline");
@@ -1313,7 +1549,7 @@ export default function DriveVaultApp() {
   function exportJson() {
     const payload = {
       app: "DriveVault",
-      version: "1.6.0",
+      version: "2.0.0",
       exportedAt: new Date().toISOString(),
       itemCount: items.length,
       items: items.map(exportableItem),
@@ -1490,18 +1726,25 @@ export default function DriveVaultApp() {
     Object.values(searchFields).some((value) => !value),
   ].filter(Boolean).length;
 
+  const homeReady = !search.trim() && typeFilter === "all" && libraryMode === "all" && selectedTag === "all" && selectedCollection === "all" && !dateFrom && !dateTo && linkFilter === "all" && !selectionMode;
+  const homeSource = liveItems.filter((item) => !item.archived);
+  const homePinned = homeSource.filter((item) => item.pinned).slice(0, 6);
+  const homeRecent = [...homeSource].filter((item) => item.lastUsedAt).sort((a, b) => String(b.lastUsedAt).localeCompare(String(a.lastUsedAt))).slice(0, 6);
+  const homeFrequent = [...homeSource].filter((item) => item.useCount > 0).sort((a, b) => b.useCount - a.useCount).slice(0, 6);
+  const favoriteCollectionStats = homeConfig.favoriteCollections.map((name) => ({ name, count: homeSource.filter((item) => item.collection === name).length })).filter((entry) => entry.count > 0);
+
   const visibleSelectedCount = filtered.filter((item) => selectedIds.has(item.id)).length;
   const allVisibleSelected = filtered.length > 0 && visibleSelectedCount === filtered.length;
 
   if (!securityReady) {
-    return <main className="lock-shell"><div className="lock-card"><div className="lock-logo"><ShieldCheck size={28}/></div><strong>DriveVault</strong><span>Đang khởi tạo bảo mật...</span></div></main>;
+    return <main className="lock-shell"><div className="lock-card"><div className="lock-logo app-lock-logo"><img src="/icons/icon-192.png" alt="" /></div><strong>DriveVault</strong><span>Đang khởi tạo bảo mật...</span></div></main>;
   }
 
   if (locked && securityConfig?.enabled) {
     return <main className="lock-shell">
       <section className="lock-card">
-        <div className="lock-logo"><Lock size={28}/></div>
-        <div className="eyebrow">DRIVEVAULT · V1.7.0</div>
+        <div className="lock-logo app-lock-logo"><img src="/icons/icon-192.png" alt="" /></div>
+        <div className="eyebrow">DRIVEVAULT · V2.0.0</div>
         <h1>Ứng dụng đã khóa</h1>
         <p>Nhập PIN để mở kho dữ liệu trên thiết bị này.</p>
         <form className="unlock-form" onSubmit={submitUnlock}>
@@ -1515,14 +1758,14 @@ export default function DriveVaultApp() {
   }
 
   return (
-    <main className="shell">
+    <main className={`shell density-${homeConfig.density}`}>
       <header className="topbar compact-topbar">
         <button className="brand-button" onClick={resetDashboard} aria-label="DriveVault · làm mới và xóa bộ lọc">
-          <span className="brand-mark"><Database size={21}/></span>
+          <span className="brand-mark brand-logo"><img src="/icons/icon-192.png" alt="" /></span>
           <span className="brand-copy">
-            <span className="eyebrow">DRIVEVAULT · V1.7.0</span>
-            <strong>Kho dùng nhanh</strong>
-            <small>App Lock · xem media & thumbnail video</small>
+            <span className="eyebrow">DRIVEVAULT · V2.0.0</span>
+            <strong>Personal Vault Pro</strong>
+            <small>Quick Capture · PWA · Smart personal dashboard</small>
           </span>
         </button>
         <div className="top-actions">
@@ -1552,6 +1795,30 @@ export default function DriveVaultApp() {
           {(["all", "media", "content", "other"] as const).map((key) => <button key={key} className={`chip ${typeFilter === key ? "active" : ""}`} onClick={() => setTypeFilter(key)}>{key === "all" ? "Tất cả loại" : typeMeta[key].label}</button>)}
         </div>
       </section>
+
+      {homeReady && (homePinned.length > 0 || homeRecent.length > 0 || homeFrequent.length > 0 || favoriteCollectionStats.length > 0) && (
+        <section className="personal-home" aria-label="Personal dashboard">
+          {favoriteCollectionStats.length > 0 && <div className="home-lane favorite-lane">
+            <div className="home-lane-head"><div><span className="eyebrow">PHÂN LOẠI YÊU THÍCH</span><strong>Truy cập nhanh</strong></div></div>
+            <div className="favorite-collection-row">{favoriteCollectionStats.map((entry) => <button key={entry.name} onClick={() => setSelectedCollection(entry.name)}><Folder size={14}/><span>{entry.name}</span><small>{entry.count}</small></button>)}</div>
+          </div>}
+
+          {homeConfig.showPinned && homePinned.length > 0 && <div className="home-lane">
+            <div className="home-lane-head"><div><span className="eyebrow">ĐÃ GHIM</span><strong>Dùng ngay</strong></div><button onClick={() => { setLibraryMode("pinned"); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Xem tất cả</button></div>
+            <div className="quick-item-row">{homePinned.map((item) => <button className="quick-item" key={item.id} onClick={() => openItem(item)}><span className={`quick-type ${typeMeta[item.type].className}`}>{typeMeta[item.type].label}</span><strong>{item.name}</strong><small>{item.collection}</small></button>)}</div>
+          </div>}
+
+          {homeConfig.showRecent && homeRecent.length > 0 && <div className="home-lane">
+            <div className="home-lane-head"><div><span className="eyebrow">GẦN ĐÂY</span><strong>Vừa sử dụng</strong></div><button onClick={() => { setLibraryMode("recent"); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Xem tất cả</button></div>
+            <div className="quick-item-row">{homeRecent.map((item) => <button className="quick-item" key={item.id} onClick={() => openItem(item)}><span className={`quick-type ${typeMeta[item.type].className}`}>{typeMeta[item.type].label}</span><strong>{item.name}</strong><small>{formatRelative(item.lastUsedAt)}</small></button>)}</div>
+          </div>}
+
+          {homeConfig.showFrequent && homeFrequent.length > 0 && <div className="home-lane">
+            <div className="home-lane-head"><div><span className="eyebrow">DÙNG NHIỀU</span><strong>Truy cập thường xuyên</strong></div><button onClick={() => { setLibraryMode("frequent"); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Xem tất cả</button></div>
+            <div className="quick-item-row">{homeFrequent.map((item) => <button className="quick-item" key={item.id} onClick={() => openItem(item)}><span className={`quick-type ${typeMeta[item.type].className}`}>{typeMeta[item.type].label}</span><strong>{item.name}</strong><small>Đã dùng {item.useCount} lần</small></button>)}</div>
+          </div>}
+        </section>
+      )}
 
       {advancedOpen && (
         <div className="modal-backdrop filter-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setAdvancedOpen(false); }}>
@@ -1597,6 +1864,21 @@ export default function DriveVaultApp() {
                   <button className={selectedTag === "all" ? "active" : ""} onClick={() => setSelectedTag("all")}># Tất cả tag</button>
                   {allTags.map((tag) => <button key={tag} className={selectedTag === tag ? "active" : ""} onClick={() => setSelectedTag(tag)}>#{tag}</button>)}
                 </div>
+              </section>
+
+              <section className="filter-section personal-dashboard-settings">
+                <div className="filter-section-title"><strong>Dashboard cá nhân</strong><span>Tùy biến trang chủ và mật độ hiển thị</span></div>
+                <div className="density-switch">
+                  <button className={homeConfig.density === "compact" ? "active" : ""} onClick={() => persistHomeConfig({ ...homeConfig, density: "compact" })}><Layers3 size={14}/> Gọn</button>
+                  <button className={homeConfig.density === "comfortable" ? "active" : ""} onClick={() => persistHomeConfig({ ...homeConfig, density: "comfortable" })}><FileText size={14}/> Thoải mái</button>
+                </div>
+                <div className="dashboard-toggle-grid">
+                  <label><input type="checkbox" checked={homeConfig.showPinned} onChange={(e) => persistHomeConfig({ ...homeConfig, showPinned: e.target.checked })}/><span><strong>Đã ghim</strong><small>Hiện lane dùng nhanh</small></span></label>
+                  <label><input type="checkbox" checked={homeConfig.showRecent} onChange={(e) => persistHomeConfig({ ...homeConfig, showRecent: e.target.checked })}/><span><strong>Gần đây</strong><small>Những mục vừa dùng</small></span></label>
+                  <label><input type="checkbox" checked={homeConfig.showFrequent} onChange={(e) => persistHomeConfig({ ...homeConfig, showFrequent: e.target.checked })}/><span><strong>Dùng nhiều</strong><small>Theo số lần sử dụng</small></span></label>
+                </div>
+                {collections.length > 0 && <div className="favorite-picker"><span>Phân loại yêu thích</span><div className="filter-chip-wrap">{collections.map((name) => <button key={name} className={homeConfig.favoriteCollections.includes(name) ? "active" : ""} onClick={() => toggleFavoriteCollection(name)}><Star size={12}/>{name}</button>)}</div></div>}
+                {installPrompt && <button className="install-app-button" onClick={() => void installApp()}><Download size={16}/> Cài DriveVault lên thiết bị</button>}
               </section>
 
               <section className="filter-section">
@@ -1673,7 +1955,7 @@ export default function DriveVaultApp() {
           <section className="modal data-tools-sheet" role="dialog" aria-modal="true" aria-labelledby="data-tools-title">
             <div className="sheet-handle" />
             <div className="modal-head">
-              <div><div className="eyebrow">V1.7 · SECURITY & DATA</div><h2 id="data-tools-title">Backup & dữ liệu</h2></div>
+              <div><div className="eyebrow">V2.0 · SECURITY & DATA</div><h2 id="data-tools-title">Backup & dữ liệu</h2></div>
               <button className="icon-button" onClick={() => setShowDataTools(false)} disabled={dataBusy}><X size={20}/></button>
             </div>
 
@@ -1739,7 +2021,7 @@ export default function DriveVaultApp() {
           <section className="modal security-sheet" role="dialog" aria-modal="true" aria-labelledby="security-title">
             <div className="sheet-handle" />
             <div className="modal-head">
-              <div><div className="eyebrow">V1.7 · SECURITY & APP LOCK</div><h2 id="security-title">Bảo mật ứng dụng</h2></div>
+              <div><div className="eyebrow">V2.0 · SECURITY & APP LOCK</div><h2 id="security-title">Bảo mật ứng dụng</h2></div>
               <button className="icon-button" onClick={() => setShowSecurity(false)} disabled={securityBusy}><X size={20}/></button>
             </div>
             <div className="security-content">
@@ -1799,15 +2081,22 @@ export default function DriveVaultApp() {
               <button className="icon-button" onClick={() => setShowForm(false)} disabled={saving}><X size={20}/></button>
             </div>
             <form onSubmit={saveItem}>
+              {!editingId && <div className="quick-capture-box">
+                <div className="quick-capture-head"><div><span className="eyebrow">QUICK CAPTURE</span><strong>Ghi nhanh với thiết lập gần nhất</strong></div><span>{readQuickPrefs().collection}</span></div>
+                {templates.length > 0 ? <div className="template-row">{templates.map((template) => <div className="template-chip" key={template.id}><button type="button" onClick={() => applyTemplate(template)}><FileText size={13}/>{template.name}</button><button type="button" className="template-remove" aria-label={`Xóa mẫu ${template.name}`} onClick={() => removeTemplate(template.id)}><X size={12}/></button></div>)}</div> : <div className="template-empty">Chưa có mẫu. Điền form rồi bấm “Lưu thành mẫu” để dùng lại một chạm.</div>}
+              </div>}
+              {!editingId && form.type === "content" && <label className="quick-url-field">Dán link nhanh <small>DriveVault sẽ tự nhận diện loại/phân loại/tag</small><input inputMode="url" value={form.url || ""} onChange={(e) => handleSmartUrlChange(e.target.value)} placeholder="https://..." /></label>}
               <label>Loại lưu trữ<select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value as StorageType }))}><option value="media">Ảnh / Video</option><option value="content">Nội dung</option><option value="other">Khác</option></select></label>
               <label>Tên<input maxLength={120} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="VD: Bộ ảnh sự kiện tháng 9" /></label>
               <label>Phân loại<input list="collection-options" maxLength={80} value={form.collection || ""} onChange={(e) => setForm((f) => ({ ...f, collection: e.target.value }))} placeholder="VD: Shopee" /><datalist id="collection-options">{collections.map((name) => <option key={name} value={name}/>)}</datalist></label>
               <label>Tag <small>(phân cách bằng dấu phẩy)</small><input value={tagText} onChange={(e) => setTagText(e.target.value)} placeholder="VD: công việc, email, mẫu" /></label>
               <label>Nội dung chi tiết {form.type === "media" && <small>(không bắt buộc)</small>}{form.type === "other" && <small>(không bắt buộc nếu có link)</small>}<textarea rows={7} value={form.detail} onChange={(e) => setForm((f) => ({ ...f, detail: e.target.value }))} placeholder={form.type === "media" ? "Mô tả ảnh/video, ghi chú, nội dung liên quan..." : "Nhập nội dung cần lưu để sao chép nhanh..."} /></label>
-              {(form.type === "media" || form.type === "other") && <label>Đường link Google Drive {form.type === "other" && <small>(không bắt buộc)</small>}<input inputMode="url" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value, thumbnail: e.target.value === f.url ? f.thumbnail : "" }))} placeholder="https://drive.google.com/..." /></label>}
+              {(form.type === "media" || form.type === "other") && <label>Đường link {form.type === "other" && <small>(không bắt buộc)</small>}<input inputMode="url" value={form.url} onChange={(e) => handleSmartUrlChange(e.target.value)} placeholder="Dán link Drive, YouTube, Shopee..." />{normalizeUrl(form.url || "") && !editingId && <span className="smart-link-hint"><Link2 size={13}/> Đã nhận diện: {inferQuickCapture(form.url || "").label} · gợi ý {inferQuickCapture(form.url || "").collection}</span>}</label>}
               {form.type === "media" && normalizeUrl(form.url || "") && <VideoThumbnailPicker url={form.url || ""} value={String(form.thumbnail || "")} onChange={(thumbnail) => setForm((f) => ({ ...f, thumbnail }))} />}
+              {!editingId && <button type="button" className="save-template-button" onClick={saveCurrentAsTemplate}><Clipboard size={16}/> Lưu form hiện tại thành mẫu</button>}
+              {duplicateCandidate && !duplicateOverride && <div className="duplicate-warning"><div><AlertCircle size={17}/><span><strong>Có thể bị trùng</strong><small>Đã có “{duplicateCandidate.name}” với cùng link/nội dung.</small></span></div><div><button type="button" onClick={() => { setShowForm(false); window.setTimeout(() => openItem(duplicateCandidate), 0); }}>Xem mục cũ</button><button type="button" className="duplicate-keep" onClick={() => setDuplicateOverride(true)}>Vẫn lưu</button></div></div>}
               <label className={`protected-toggle ${!securityConfig?.enabled ? "disabled" : ""}`}><span><Lock size={16}/><span><strong>Bảo vệ mục này</strong><small>{securityConfig?.enabled ? "Yêu cầu PIN khi mở block" : "Bật App Lock trước để sử dụng"}</small></span></span><input type="checkbox" checked={Boolean(form.protected && securityConfig?.enabled)} disabled={!securityConfig?.enabled} onChange={(e) => setForm((f) => ({ ...f, protected: e.target.checked }))}/></label>
-              <button className="save" disabled={saving}>{saving ? <Loader2 size={18} className="spin" /> : editingId ? <Pencil size={18}/> : <Plus size={18}/>} {saving ? "Đang lưu..." : editingId ? "Lưu thay đổi" : "Lưu mục"}</button>
+              <button className="save" disabled={saving}>{saving ? <Loader2 size={18} className="spin" /> : editingId ? <Pencil size={18}/> : <Plus size={18}/>} {saving ? "Đang lưu..." : editingId ? "Lưu thay đổi" : duplicateOverride ? "Lưu dù trùng" : "Lưu mục"}</button>
             </form>
           </section>
         </div>
@@ -1838,7 +2127,7 @@ export default function DriveVaultApp() {
                 <button className="danger-button" onClick={() => purgeItem(selected)}><Trash2 size={18}/> Xóa vĩnh viễn</button>
               </> : <>
                 {selected.detail && <button className="secondary" onClick={() => copyItem(selected)}><Clipboard size={18}/> Sao chép</button>}
-                {selected.url && <a className="primary" href={selected.url} target="_blank" rel="noreferrer" onClick={() => recordUsage(selected)}><ExternalLink size={18}/> Truy cập Drive</a>}
+                {selected.url && <a className="primary" href={selected.url} target="_blank" rel="noreferrer" onClick={() => recordUsage(selected)}><ExternalLink size={18}/> Truy cập</a>}
                 <button className="secondary" onClick={() => openEdit(selected)}><Pencil size={18}/> Sửa</button>
                 <button className="secondary" onClick={() => archiveItem(selected)}>{selected.archived ? <ArchiveRestore size={18}/> : <Archive size={18}/>} {selected.archived ? "Khôi phục" : "Lưu trữ"}</button>
               </>}
