@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "DriveVault",
-  description: "Media Library Pro - kho lưu trữ cá nhân với gallery ảnh/video, fullscreen và quick capture.",
+  description: "Smart Rules & Automation - kho lưu trữ cá nhân với tự động hóa, media player trong app và fullscreen.",
   applicationName: "DriveVault",
   manifest: "/manifest.webmanifest",
   icons: {

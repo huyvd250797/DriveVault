@@ -1,89 +1,80 @@
-# DriveVault Mobile V2.1.0 – Media Library Pro
+# DriveVault Mobile V2.2.0 – Smart Rules & Automation
 
-V2.1.0 nâng DriveVault từ kho lưu trữ cá nhân thành **thư viện media dùng thực tế trên mobile**, đồng thời xử lý lỗi thanh tìm kiếm/bộ lọc bị tràn vào vùng giờ/pin của iPhone khi sticky lúc scroll.
+V2.2.0 nâng cấp trực tiếp từ V2.1.0 Header/Safe-Area Fix 2. Bản này tập trung vào tự động hóa thao tác lưu dữ liệu và sửa lại trình phát video để xem video Google Drive trực tiếp trong DriveVault ổn định hơn.
 
-## Tính năng mới V2.1.0
+## 1. Smart Rules & Automation
 
-### 1. Media Library Pro
-- Khi chọn loại **Ảnh / Video**, DriveVault chuyển sang thư viện media chuyên dụng.
-- Có 2 kiểu hiển thị:
-  - **Gallery/Grid** để duyệt nhanh thumbnail.
-  - **Danh sách** để dùng lại card chi tiết và swipe như trước.
-- Media Grid tối ưu mobile 2 cột; màn hình lớn hiển thị 3 cột.
-- Hiển thị thumbnail/cover, loại media, trạng thái ghim và phân loại.
+Trong Header có thêm nút biểu tượng tia sét để mở **Smart Rules**.
 
-### 2. Lọc Ảnh / Video
-- Trong Media Library có bộ lọc nhanh:
-  - Tất cả
-  - Ảnh
-  - Video
-- Direct image/video, YouTube và nội dung có tag rõ ràng được nhận diện ngay.
-- Với Google Drive file chưa xác định loại, app gọi metadata nhẹ qua `/api/media?meta=1` để đọc `Content-Type`, sau đó cache loại media trên thiết bị.
+Mỗi rule có thể kiểm tra:
+- URL
+- Tên
+- Nội dung chi tiết
+- Tên + Nội dung + URL
 
-### 3. Gallery fullscreen + swipe
-- Chạm thumbnail trong Grid mở **Gallery toàn màn hình trong app**.
-- Vuốt trái/phải để chuyển media.
-- Có nút Previous / Next.
-- Có số thứ tự `x / tổng`.
-- Có nút mở chi tiết block và mở link gốc.
-- Player/ảnh trong Gallery tiếp tục hỗ trợ nút fullscreen thật của trình duyệt.
+Điều kiện hỗ trợ:
+- Chứa
+- Bắt đầu bằng
+- Kết thúc bằng
+- Bằng chính xác
 
-### 4. Video nhớ vị trí xem dở
-- Với video chạy bằng player HTML5 (Google Drive stream/direct video), DriveVault lưu vị trí hiện tại vào localStorage.
-- Mở lại video sẽ tiếp tục từ vị trí gần nhất nếu chưa xem xong.
-- Khi video kết thúc, tiến độ được reset về đầu.
-- Không ghi dữ liệu tiến độ vào Google Sheet nên không làm nặng database.
+Khi rule khớp, DriveVault có thể tự:
+- đổi Loại lưu trữ;
+- gán Phân loại;
+- thêm Tag;
+- Ghim;
+- Lưu trữ;
+- Bảo vệ bằng App Lock (khi App Lock đã bật).
 
-### 5. Cover / Thumbnail
-- Giữ nguyên cơ chế chọn khung hình video từ V1.7/V2.0.
-- Thumbnail tùy chỉnh tiếp tục được ưu tiên hiển thị trong Media Grid.
-- Nếu chưa có cover tùy chỉnh, app dùng thumbnail Drive/YouTube khi có.
+V2.2.0 có sẵn các rule mặc định cho Shopee, YouTube, Google Drive và TikTok. Có thể bật/tắt hoặc xóa các rule này và tự tạo rule mới.
 
-### 6. Bulk media actions
-- Chế độ **Chọn nhiều** hiện có tiếp tục hoạt động với Media Grid.
-- Có thể chọn trực tiếp từng tile trong Gallery Grid.
-- Bulk pin / unpin / archive / move classification / delete tiếp tục dùng Offline Queue hiện tại.
+Nút **Chạy trên dữ liệu cũ** cho phép áp dụng rule vào những block đã tồn tại. App sẽ hỏi xác nhận trước khi cập nhật.
 
-### 7. Fix iPhone Safe Area – Search & Filter (Deploy Fix 2)
-- **Khôi phục đầy đủ Header** ở đầu trang: logo/tên DriveVault, App Lock, Data/Backup, Dark/Light và Reload/Sync.
-- Header là nội dung bình thường của trang, **không sticky** và không bị thanh tìm kiếm che.
-- Chỉ riêng **Tìm kiếm + nút Bộ lọc** mới sticky khi người dùng bắt đầu scroll xuống.
-- Khi sticky trên iPhone/PWA, thanh này tự hạ xuống dưới `safe-area-inset-top`, tránh vùng giờ / Dynamic Island / sóng / Wi‑Fi / pin.
-- Bộ lọc loại lưu trữ và toolbar Media tiếp tục scroll theo nội dung, không chiếm vùng header cố định.
+Smart Rules được lưu local trên thiết bị, không làm thay đổi schema Google Sheet.
 
-```css
---dv-sticky-safe-top: max(8px, env(safe-area-inset-top));
-```
+## 2. Fix xem video trực tiếp trong app
 
-Cơ chế safe-area chỉ được kích hoạt khi đang scroll, nên lúc ở đầu trang bố cục Header vẫn hiển thị đúng như V2.0.
+### Google Drive Video
+V2.1 dùng raw stream qua `/api/media`. Một số video (đặc biệt video dùng codec mà Safari/Chrome không hỗ trợ trực tiếp) có thể phát được âm thanh nhưng không có hình.
 
-## Database / Google Apps Script
+V2.2 thay đổi cách phát:
+- Google Drive video ưu tiên **Google Drive Preview nhúng trực tiếp trong DriveVault**.
+- Drive xử lý/transcode video nên tương thích codec tốt hơn.
+- Không mở tab ngoài khi xem bình thường.
+- Giữ player ngay trong Bottom Sheet và Media Gallery.
 
-**Không thay đổi schema `Vault`.**
+### Fullscreen
+Nút fullscreen đã được nâng cấp:
+- Desktop/Android: dùng Fullscreen API khi trình duyệt hỗ trợ.
+- iPhone/iOS: nếu Fullscreen API của phần tử không khả dụng, DriveVault chuyển player sang **app fullscreen 100dvh**.
+- Video trực tiếp dùng native fullscreen của iOS khi có thể.
+- Google Drive Preview vẫn có control fullscreen nội bộ của Google Drive.
 
-Schema vẫn là:
+### Google Drive resource key
+`/api/media` hỗ trợ thêm `resourceKey` của Drive link và tiếp tục hỗ trợ HTTP Range để seek media/thumbnails.
 
-```text
-id | type | name | detail | url | createdAt | updatedAt | tags | pinned | useCount | lastUsedAt | collection | archived | deleted | deletedAt | thumbnail | protected
-```
+> File Drive vẫn cần quyền truy cập phù hợp. Với app cá nhân không đăng nhập Google, cách ổn định nhất là file được chia sẻ “Bất kỳ ai có liên kết”. File Drive mới upload cũng có thể cần một lúc để Google xử lý video trước khi Preview phát được.
 
-V2.1 chỉ mở rộng `/api/media` ở Next.js để đọc metadata MIME của file Drive khi cần lọc Ảnh/Video. Không cần thêm cột Google Sheet.
+## 3. Không thay đổi database
 
-## Nâng cấp từ V2.0.0
+V2.2.0 không thêm cột Google Sheet và không bắt buộc cập nhật `Code.gs` nếu Apps Script V2.1 đang hoạt động ổn.
 
-1. Deploy source V2.1.0 lên Vercel.
-2. Giữ nguyên Environment Variables:
+Giữ nguyên Environment Variables trên Vercel:
 
 ```env
-GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/xxxxx/exec
-DRIVEVAULT_API_KEY=your-secret-key
+GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/.../exec
+DRIVEVAULT_API_KEY=...
 ```
 
-3. **Không cần migrate Google Sheet.**
-4. **Không bắt buộc redeploy Apps Script** nếu V2.0/V1.7 backend hiện tại đang chạy ổn, vì schema/API Apps Script không đổi.
-5. Service Worker cache đã đổi sang namespace V2.1 để client nhận shell mới.
+## 4. Deploy
 
-## Roadmap
+1. Deploy source V2.2.0 lên Vercel.
+2. Giữ nguyên `GOOGLE_SCRIPT_URL` và `DRIVEVAULT_API_KEY`.
+3. Không cần chạy migration.
+4. Sau khi deploy, mở app → tia sét ở Header → kiểm tra Smart Rules.
+5. Với video Drive, mở block hoặc Gallery để kiểm tra player và fullscreen.
+
+## 5. Roadmap
 
 - ✅ V1.0.0 – Mobile Quick Storage
 - ✅ V1.1.0 – Fast Capture & Mobile UX
@@ -94,21 +85,16 @@ DRIVEVAULT_API_KEY=your-secret-key
 - ✅ V1.6.0 – Media & Link Intelligence
 - ✅ V1.7.0 – Security & App Lock + Media Pro
 - ✅ V2.0.0 – Personal Vault Pro & Quick Capture
-- ✅ **V2.1.0 – Media Library Pro**
-- ⏭️ **V2.2.0 – Smart Rules & Automation**
+- ✅ V2.1.0 – Media Library Pro
+- ✅ V2.2.0 – Smart Rules & Automation
+- ⏭️ V2.3.0 – Version History & Recovery
 
-### V2.2.0 dự kiến
-- Rule tự động theo URL/domain/nội dung.
-- Auto Classification.
-- Auto Tag.
-- Auto Pin theo điều kiện.
-- Tự nhận diện Shopee/YouTube/Drive/TikTok sâu hơn.
-- Chạy rule lại trên dữ liệu cũ.
-- Preview kết quả trước khi apply hàng loạt.
+## Phiên bản tiếp theo – V2.3.0
 
-## Kiểm tra source
-
-- TypeScript/TSX đã qua syntax/transpile check bằng TypeScript compiler.
-- `public/sw.js` đã qua `node --check`.
-- `google-apps-script/Code.gs` đã qua JavaScript syntax check bằng bản sao `.js`.
-- `npm install` trong môi trường đóng gói bị timeout khi tải dependency, nên chưa chạy được full `next build`; Vercel sẽ cài dependency thật khi deploy.
+Đề xuất tập trung vào **Version History & Recovery**:
+- lưu lịch sử sửa từng block;
+- xem trước/sau khi chỉnh sửa;
+- restore phiên bản cũ;
+- audit thay đổi;
+- snapshot trước bulk action lớn;
+- lịch sử khôi phục/xóa để giảm rủi ro mất dữ liệu.

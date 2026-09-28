@@ -15,7 +15,9 @@ export async function GET(request: NextRequest) {
 
   const range = request.headers.get("range");
   const metadataOnly = request.nextUrl.searchParams.get("meta") === "1";
-  const upstreamUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
+  const resourceKey = request.nextUrl.searchParams.get("resourceKey")?.trim() || "";
+  const resourceKeyParam = resourceKey ? `&resourcekey=${encodeURIComponent(resourceKey)}` : "";
+  const upstreamUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t${resourceKeyParam}`;
   const headers = new Headers();
   if (metadataOnly) headers.set("range", "bytes=0-0");
   else if (range) headers.set("range", range);
@@ -44,6 +46,8 @@ export async function GET(request: NextRequest) {
       if (value) responseHeaders.set(key, value);
     }
     responseHeaders.set("cache-control", "private, max-age=300");
+    responseHeaders.set("content-disposition", "inline");
+    responseHeaders.set("x-content-type-options", "nosniff");
 
     return new Response(upstream.body, {
       status: upstream.status,

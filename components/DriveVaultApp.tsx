@@ -51,6 +51,7 @@ import {
   Trash2,
   Undo2,
   WifiOff,
+  Zap,
   X,
 } from "lucide-react";
 import type { BackupSnapshot, CreateVaultItem, ImportReport, StorageType, SyncState, VaultItem } from "@/lib/types";
@@ -65,6 +66,7 @@ const QUICK_TEMPLATES_KEY = "drivevault-v200-quick-templates";
 const HOME_CONFIG_KEY = "drivevault-v200-home-config";
 const MEDIA_PROGRESS_KEY = "drivevault-v210-media-progress";
 const MEDIA_KIND_CACHE_KEY = "drivevault-v210-media-kind-cache";
+const SMART_RULES_KEY = "drivevault-v220-smart-rules";
 const DELETE_UNDO_MS = 5000;
 
 const typeMeta: Record<StorageType, { label: string; icon: typeof ImageIcon; className: string }> = {
@@ -82,6 +84,23 @@ type DensityMode = "compact" | "comfortable";
 type MediaKind = "image" | "video" | "unknown";
 type MediaKindFilter = "all" | "image" | "video";
 type MediaViewMode = "grid" | "list";
+type SmartRuleField = "url" | "name" | "detail" | "any";
+type SmartRuleOperator = "contains" | "startsWith" | "endsWith" | "equals";
+
+type SmartRule = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  field: SmartRuleField;
+  operator: SmartRuleOperator;
+  value: string;
+  setType?: StorageType | "";
+  collection?: string;
+  tags: string[];
+  pinned?: boolean;
+  archived?: boolean;
+  protected?: boolean;
+};
 
 type QuickTemplate = {
   id: string;
@@ -142,6 +161,56 @@ const defaultHomeConfig: HomeConfig = {
   favoriteCollections: [],
   density: "comfortable",
 };
+
+const defaultSmartRules: SmartRule[] = [
+  { id: "builtin-shopee", name: "Shopee → phân loại Shopee", enabled: true, field: "url", operator: "contains", value: "shopee.", setType: "other", collection: "Shopee", tags: ["shopee", "mua sắm"] },
+  { id: "builtin-youtube", name: "YouTube → Media", enabled: true, field: "url", operator: "contains", value: "youtu", setType: "media", collection: "Media", tags: ["video", "youtube"] },
+  { id: "builtin-drive", name: "Google Drive → Media", enabled: true, field: "url", operator: "contains", value: "drive.google.com", setType: "media", collection: "Media", tags: ["google drive"] },
+  { id: "builtin-tiktok", name: "TikTok → Media", enabled: true, field: "url", operator: "contains", value: "tiktok.", setType: "media", collection: "Media", tags: ["video", "tiktok"] },
+];
+
+const emptySmartRule: Omit<SmartRule, "id"> = {
+  name: "", enabled: true, field: "url", operator: "contains", value: "", setType: "", collection: "", tags: [], pinned: false, archived: false, protected: false,
+};
+
+function readSmartRules(): SmartRule[] {
+  if (typeof window === "undefined") return defaultSmartRules;
+  try {
+    const raw = window.localStorage.getItem(SMART_RULES_KEY);
+    if (!raw) return defaultSmartRules;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map((rule) => ({ ...emptySmartRule, ...rule, id: String(rule.id || createClientId()), tags: normalizeTags(Array.isArray(rule.tags) ? rule.tags : []) })) : defaultSmartRules;
+  } catch { return defaultSmartRules; }
+}
+
+function smartRuleMatches(rule: SmartRule, draft: Pick<CreateVaultItem, "name" | "detail" | "url">) {
+  if (!rule.enabled || !rule.value.trim()) return false;
+  const source = rule.field === "url" ? String(draft.url || "") : rule.field === "name" ? String(draft.name || "") : rule.field === "detail" ? String(draft.detail || "") : `${draft.name || ""} ${draft.detail || ""} ${draft.url || ""}`;
+  const haystack = source.toLocaleLowerCase("vi").trim();
+  const needle = rule.value.toLocaleLowerCase("vi").trim();
+  if (!needle) return false;
+  if (rule.operator === "equals") return haystack === needle;
+  if (rule.operator === "startsWith") return haystack.startsWith(needle);
+  if (rule.operator === "endsWith") return haystack.endsWith(needle);
+  return haystack.includes(needle);
+}
+
+function applySmartRulesToDraft<T extends CreateVaultItem>(draft: T, rules: SmartRule[], allowProtected = true): { draft: T; matched: SmartRule[] } {
+  const matched = rules.filter((rule) => smartRuleMatches(rule, draft));
+  if (!matched.length) return { draft, matched };
+  const next = { ...draft } as T;
+  let tags = normalizeTags(next.tags || []);
+  for (const rule of matched) {
+    if (rule.setType) next.type = rule.setType;
+    if (rule.collection?.trim()) next.collection = normalizeCollection(rule.collection);
+    if (rule.tags.length) tags = normalizeTags([...tags, ...rule.tags]);
+    if (rule.pinned) next.pinned = true;
+    if (rule.archived) next.archived = true;
+    if (allowProtected && rule.protected) next.protected = true;
+  }
+  next.tags = tags;
+  return { draft: next, matched };
+}
 
 function readQuickPrefs(): QuickPrefs {
   if (typeof window === "undefined") return { type: "content", collection: "Chưa phân loại", tags: [] };
@@ -405,6 +474,7 @@ type LinkIntel = {
   thumbnailUrl?: string;
   embedUrl?: string;
   streamUrl?: string;
+  resourceKey?: string;
 };
 
 function analyzeLink(value: string): LinkIntel {
@@ -420,15 +490,21 @@ function analyzeLink(value: string): LinkIntel {
       if (folderMatch) return { kind: "drive-folder", provider: "Google Drive", label: "Thư mục Drive", fileId: folderMatch[1] };
       const fileMatch = path.match(/\/(?:file\/d|document\/d|spreadsheets\/d|presentation\/d)\/([a-zA-Z0-9_-]+)/);
       const id = fileMatch?.[1] || url.searchParams.get("id") || undefined;
-      if (id) return {
-        kind: "drive-file",
-        provider: "Google Drive",
-        label: "Tệp Google Drive",
-        fileId: id,
-        thumbnailUrl: `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w1600`,
-        embedUrl: `https://drive.google.com/file/d/${encodeURIComponent(id)}/preview`,
-        streamUrl: `/api/media?fileId=${encodeURIComponent(id)}`,
-      };
+      const resourceKey = url.searchParams.get("resourcekey") || undefined;
+      if (id) {
+        const rk = resourceKey ? `&resourceKey=${encodeURIComponent(resourceKey)}` : "";
+        const previewQuery = resourceKey ? `?resourcekey=${encodeURIComponent(resourceKey)}` : "";
+        return {
+          kind: "drive-file",
+          provider: "Google Drive",
+          label: "Tệp Google Drive",
+          fileId: id,
+          resourceKey,
+          thumbnailUrl: `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w1600${rk}`,
+          embedUrl: `https://drive.google.com/file/d/${encodeURIComponent(id)}/preview${previewQuery}`,
+          streamUrl: `/api/media?fileId=${encodeURIComponent(id)}${rk}`,
+        };
+      }
       return { kind: "web", provider: "Google Drive", label: "Liên kết Drive" };
     }
 
@@ -528,67 +604,88 @@ function MediaThumbnail({ item }: { item: VaultItem }) {
   return <div className="media-thumbnail"><img src={source} alt={`Thumbnail ${item.name}`} loading="lazy" onError={() => setFailed(true)} /></div>;
 }
 
-function requestElementFullscreen(element: HTMLElement | null) {
-  if (!element) return;
-  if (document.fullscreenElement) void document.exitFullscreen();
-  else void element.requestFullscreen?.();
-}
-
 function MediaDetailPreview({ item }: { item: VaultItem }) {
   const intel = analyzeLink(item.url);
-  const [videoFailed, setVideoFailed] = useState(false);
   const [driveImageFailed, setDriveImageFailed] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
+  const [appFullscreen, setAppFullscreen] = useState(false);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const resolvedKind = (typeof window !== "undefined" ? readMediaKindCache()[item.id] : undefined) || inferMediaKind(item);
   if (!item.url) return null;
 
+  async function toggleFullscreen(preferNativeVideo = false) {
+    const video = videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
+    if (preferNativeVideo && !document.fullscreenElement && video?.webkitEnterFullscreen) {
+      try { video.webkitEnterFullscreen(); return; } catch {}
+    }
+    if (document.fullscreenElement) {
+      try { await document.exitFullscreen(); return; } catch {}
+    }
+    if (!appFullscreen && stageRef.current?.requestFullscreen) {
+      try { await stageRef.current.requestFullscreen(); return; } catch {}
+    }
+    setAppFullscreen((value) => !value);
+  }
+
+  const shellClass = `media-viewer-shell ${appFullscreen ? "app-fullscreen" : ""}`;
+  const fullButton = (preferNativeVideo = false) => <button className="media-fullscreen" onClick={() => void toggleFullscreen(preferNativeVideo)} aria-label={appFullscreen ? "Thoát toàn màn hình" : "Xem toàn màn hình"}><Maximize2 size={17}/></button>;
+
   if (intel.kind === "direct-image") {
-    return <div className="media-viewer-shell" ref={stageRef}>
-      <button className="media-fullscreen" onClick={() => requestElementFullscreen(stageRef.current)} aria-label="Xem ảnh toàn màn hình"><Maximize2 size={17}/></button>
+    return <div className={shellClass} ref={stageRef}>
+      {fullButton()}
       <img className="inapp-image" src={intel.thumbnailUrl} alt={item.name} onError={() => setImageFailed(true)} />
       {imageFailed && <div className="media-player-error">Không tải được ảnh. Hãy kiểm tra quyền truy cập link.</div>}
     </div>;
   }
 
   if (intel.kind === "drive-file" && intel.streamUrl && resolvedKind === "image" && !driveImageFailed) {
-    return <div className="media-viewer-shell" ref={stageRef}>
-      <button className="media-fullscreen" onClick={() => requestElementFullscreen(stageRef.current)} aria-label="Xem ảnh toàn màn hình"><Maximize2 size={17}/></button>
+    return <div className={shellClass} ref={stageRef}>
+      {fullButton()}
       <img className="inapp-image" src={intel.streamUrl} alt={item.name} onError={() => setDriveImageFailed(true)} />
     </div>;
   }
 
-  if (((intel.kind === "drive-file" && resolvedKind !== "image") || intel.kind === "direct-video") && intel.streamUrl && !videoFailed) {
-    return <div className="media-viewer-shell video-shell" ref={stageRef}>
-      <button className="media-fullscreen" onClick={() => requestElementFullscreen(stageRef.current)} aria-label="Xem video toàn màn hình"><Maximize2 size={17}/></button>
-      <video className="inapp-video" controls playsInline preload="metadata" poster={item.thumbnail || intel.thumbnailUrl} src={intel.streamUrl}
+  // Google Drive video: ưu tiên Drive Preview thay vì raw download. Drive sẽ tự transcode
+  // các codec mà Safari/iPhone hoặc Chromium không giải mã được (trường hợp chỉ nghe tiếng nhưng không có hình).
+  if (intel.kind === "drive-file" && intel.embedUrl && resolvedKind !== "image") {
+    return <div className={`${shellClass} video-shell drive-preview-shell`} ref={stageRef}>
+      {fullButton()}
+      <iframe
+        src={intel.embedUrl}
+        title={`Xem video ${item.name}`}
+        loading="eager"
+        allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+        allowFullScreen
+      />
+      <div className="media-player-note">Video Drive được phát trực tiếp trong DriveVault. Nếu file vừa tải lên, Google Drive có thể cần một lúc để xử lý video.</div>
+    </div>;
+  }
+
+  if (intel.kind === "direct-video" && intel.streamUrl) {
+    return <div className={`${shellClass} video-shell`} ref={stageRef}>
+      {fullButton(true)}
+      <video ref={videoRef} className="inapp-video" controls playsInline preload="metadata" poster={item.thumbnail || intel.thumbnailUrl} src={intel.streamUrl}
         onLoadedMetadata={(e) => { const saved = readMediaProgress(item.id); if (saved > 2 && saved < Math.max(0, e.currentTarget.duration - 5)) e.currentTarget.currentTime = saved; }}
         onTimeUpdate={(e) => { writeMediaProgress(item.id, e.currentTarget.currentTime); window.dispatchEvent(new Event("drivevault-activity")); }}
-        onEnded={() => writeMediaProgress(item.id, 0)} onError={() => setVideoFailed(true)} />
-    </div>;
-  }
-
-  if (intel.kind === "drive-file" && intel.streamUrl && videoFailed && !driveImageFailed) {
-    return <div className="media-viewer-shell" ref={stageRef}>
-      <button className="media-fullscreen" onClick={() => requestElementFullscreen(stageRef.current)} aria-label="Xem ảnh toàn màn hình"><Maximize2 size={17}/></button>
-      <img className="inapp-image" src={intel.streamUrl} alt={item.name} onError={() => setDriveImageFailed(true)} />
+        onEnded={() => writeMediaProgress(item.id, 0)} />
     </div>;
   }
 
   if (intel.embedUrl) {
-    return <div className="media-viewer-shell video-shell" ref={stageRef}>
-      <button className="media-fullscreen" onClick={() => requestElementFullscreen(stageRef.current)} aria-label="Xem toàn màn hình"><Maximize2 size={17}/></button>
-      <iframe src={intel.embedUrl} title={`Xem ${item.name}`} loading="lazy" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen />
+    return <div className={`${shellClass} video-shell`} ref={stageRef}>
+      {fullButton()}
+      <iframe src={intel.embedUrl} title={`Xem ${item.name}`} loading="eager" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen />
     </div>;
   }
 
   if (intel.thumbnailUrl && !imageFailed) {
-    return <div className="media-viewer-shell" ref={stageRef}>
-      <button className="media-fullscreen" onClick={() => requestElementFullscreen(stageRef.current)} aria-label="Xem ảnh toàn màn hình"><Maximize2 size={17}/></button>
+    return <div className={shellClass} ref={stageRef}>
+      {fullButton()}
       <img className="inapp-image" src={item.thumbnail || intel.thumbnailUrl} alt={item.name} onError={() => setImageFailed(true)} />
     </div>;
   }
-  return null;
+  return <div className="media-player-error">Không xác định được định dạng media để xem trực tiếp.</div>;
 }
 
 function compressVideoFrame(video: HTMLVideoElement) {
@@ -926,6 +1023,11 @@ export default function DriveVaultApp() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [duplicateCandidate, setDuplicateCandidate] = useState<VaultItem | null>(null);
   const [duplicateOverride, setDuplicateOverride] = useState(false);
+  const [smartRules, setSmartRules] = useState<SmartRule[]>(defaultSmartRules);
+  const [showRules, setShowRules] = useState(false);
+  const [ruleDraft, setRuleDraft] = useState<Omit<SmartRule, "id">>(emptySmartRule);
+  const [ruleTagText, setRuleTagText] = useState("");
+  const [runningRules, setRunningRules] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const scrollIdleTimer = useRef<number | null>(null);
@@ -967,6 +1069,58 @@ export default function DriveVaultApp() {
   function writeTemplates(next: QuickTemplate[]) {
     setTemplates(next);
     try { window.localStorage.setItem(QUICK_TEMPLATES_KEY, JSON.stringify(next)); } catch {}
+  }
+
+  function persistSmartRules(next: SmartRule[]) {
+    setSmartRules(next);
+    try { window.localStorage.setItem(SMART_RULES_KEY, JSON.stringify(next)); } catch {}
+  }
+
+  function addSmartRule() {
+    const value = ruleDraft.value.trim();
+    const name = ruleDraft.name.trim() || `Rule ${smartRules.length + 1}`;
+    if (!value) return notify("Nhập điều kiện cho rule trước");
+    const next: SmartRule = {
+      ...ruleDraft,
+      id: createClientId(),
+      name: name.slice(0, 80),
+      value: value.slice(0, 200),
+      collection: ruleDraft.collection?.trim() ? normalizeCollection(ruleDraft.collection) : "",
+      tags: normalizeTags(ruleTagText),
+    };
+    persistSmartRules([next, ...smartRules]);
+    setRuleDraft(emptySmartRule);
+    setRuleTagText("");
+    notify("Đã tạo Smart Rule");
+  }
+
+  function toggleSmartRule(id: string) {
+    persistSmartRules(smartRules.map((rule) => rule.id === id ? { ...rule, enabled: !rule.enabled } : rule));
+  }
+
+  function removeSmartRule(id: string) {
+    persistSmartRules(smartRules.filter((rule) => rule.id !== id));
+    notify("Đã xóa rule");
+  }
+
+  async function runRulesOnExistingData() {
+    const candidates = itemsRef.current.filter((item) => !item.deleted);
+    const updates: VaultItem[] = [];
+    for (const item of candidates) {
+      const applied = applySmartRulesToDraft({ ...item }, smartRules, Boolean(securityConfig?.enabled));
+      if (!applied.matched.length) continue;
+      const next = withDefaults({ ...item, ...applied.draft, protected: Boolean(applied.draft.protected && securityConfig?.enabled), updatedAt: new Date().toISOString(), syncState: "pending" });
+      const changed = next.type !== item.type || next.collection !== item.collection || next.pinned !== item.pinned || next.archived !== item.archived || next.protected !== item.protected || next.tags.join("|") !== item.tags.join("|");
+      if (changed) updates.push(next);
+    }
+    if (!updates.length) return notify("Không có dữ liệu nào cần cập nhật theo rule");
+    if (!window.confirm(`Áp dụng Smart Rules cho ${updates.length} mục hiện có?`)) return;
+    setRunningRules(true);
+    const updateMap = new Map(updates.map((item) => [item.id, item]));
+    setItems((current) => current.map((item) => updateMap.get(item.id) || item));
+    for (const item of updates) enqueue({ opId: createClientId(), type: "update", targetId: item.id, item });
+    setRunningRules(false);
+    notify(`Đã áp dụng rule cho ${updates.length} mục`);
   }
 
   function saveCurrentAsTemplate() {
@@ -1286,6 +1440,9 @@ export default function DriveVaultApp() {
 
   useEffect(() => {
     try {
+      const loadedRules = readSmartRules();
+      setSmartRules(loadedRules);
+      if (!window.localStorage.getItem(SMART_RULES_KEY)) window.localStorage.setItem(SMART_RULES_KEY, JSON.stringify(loadedRules));
       const savedTemplates = JSON.parse(window.localStorage.getItem(QUICK_TEMPLATES_KEY) || "[]");
       if (Array.isArray(savedTemplates)) setTemplates(savedTemplates.slice(0, 20));
       const savedHome = JSON.parse(window.localStorage.getItem(HOME_CONFIG_KEY) || "null") as Partial<HomeConfig> | null;
@@ -1376,7 +1533,7 @@ export default function DriveVaultApp() {
   }, []);
 
   useEffect(() => {
-    if (!showForm && !selected && !showDataTools && !advancedOpen && !showSecurity && !protectedTargetId && !mediaGalleryId) return;
+    if (!showForm && !selected && !showDataTools && !advancedOpen && !showSecurity && !showRules && !protectedTargetId && !mediaGalleryId) return;
     const scrollY = window.scrollY;
     const body = document.body;
     const previous = { position: body.style.position, top: body.style.top, left: body.style.left, right: body.style.right, width: body.style.width, overflow: body.style.overflow };
@@ -1387,7 +1544,7 @@ export default function DriveVaultApp() {
     body.style.width = "100%";
     body.style.overflow = "hidden";
     return () => { Object.assign(body.style, previous); window.scrollTo(0, scrollY); };
-  }, [showForm, selected, showDataTools, advancedOpen, showSecurity, protectedTargetId, mediaGalleryId]);
+  }, [showForm, selected, showDataTools, advancedOpen, showSecurity, showRules, protectedTargetId, mediaGalleryId]);
 
   const liveItems = useMemo(() => items.filter((item) => !item.deleted), [items]);
   const allTags = useMemo(() => Array.from(new Set(liveItems.flatMap((item) => item.tags))).sort((a, b) => a.localeCompare(b, "vi")), [liveItems]);
@@ -1473,20 +1630,26 @@ export default function DriveVaultApp() {
     const normalized = normalizeUrl(value);
     const suggestion = inferQuickCapture(normalized);
     const prefs = readQuickPrefs();
+    let smartTags: string[] = [];
     setForm((current) => {
-      const next = { ...current, url: value, thumbnail: value === current.url ? current.thumbnail : "" };
+      let next: CreateVaultItem = { ...current, url: value, thumbnail: value === current.url ? current.thumbnail : "" };
       if (!editingId && normalized) {
         next.type = suggestion.type;
         const collectionUntouched = !current.collection || current.collection === "Chưa phân loại" || normalizeCollection(current.collection) === prefs.collection;
         if (collectionUntouched) next.collection = suggestion.collection;
       }
-      return next;
+      const applied = applySmartRulesToDraft(next, smartRules, Boolean(securityConfig?.enabled));
+      smartTags = normalizeTags(applied.draft.tags || []);
+      return applied.draft;
     });
-    if (!editingId && normalized && suggestion.tags.length) {
+    if (!editingId && normalized) {
       const currentTags = normalizeTags(tagText);
       const remembered = normalizeTags(prefs.tags);
       const tagsUntouched = currentTags.join("|").toLowerCase() === remembered.join("|").toLowerCase();
-      if (tagsUntouched || currentTags.length === 0) setTagText(normalizeTags([...currentTags, ...suggestion.tags]).join(", "));
+      const ruleTags = smartRules.filter((rule) => smartRuleMatches(rule, { name: form.name, detail: form.detail, url: value })).flatMap((rule) => rule.tags);
+      if (tagsUntouched || currentTags.length === 0 || ruleTags.length) {
+        setTagText(normalizeTags([...currentTags, ...suggestion.tags, ...smartTags, ...ruleTags]).join(", "));
+      }
     }
   }
 
@@ -1521,14 +1684,26 @@ export default function DriveVaultApp() {
     const tags = normalizeTags(tagText);
     const collection = normalizeCollection(form.collection);
     if (!name) return setError("Vui lòng nhập tên.");
-    if (form.type === "media" && !url) return setError("Ảnh / Video cần link hợp lệ.");
-    if (form.type === "content" && !detail) return setError("Vui lòng nhập nội dung chi tiết.");
-    if (form.type === "other" && !detail && !url) return setError("Loại Khác cần ít nhất nội dung hoặc đường link.");
+
+    const baseDraft: CreateVaultItem = {
+      ...form, name, detail, url, tags, collection,
+      pinned: Boolean(form.pinned),
+      archived: Boolean(form.archived),
+      protected: Boolean(form.protected && securityConfig?.enabled),
+    };
+    const applied = applySmartRulesToDraft(baseDraft, smartRules, Boolean(securityConfig?.enabled));
+    const prepared = applied.draft;
+    const preparedTags = normalizeTags(prepared.tags || []);
+    const preparedCollection = normalizeCollection(prepared.collection);
+
+    if (prepared.type === "media" && !url) return setError("Ảnh / Video cần link hợp lệ.");
+    if (prepared.type === "content" && !detail) return setError("Vui lòng nhập nội dung chi tiết.");
+    if (prepared.type === "other" && !detail && !url) return setError("Loại Khác cần ít nhất nội dung hoặc đường link.");
 
     const duplicateDraft = withDefaults({
-      id: editingId || "draft", type: form.type, name, detail, url, tags, collection,
-      pinned: Boolean(form.pinned), archived: false, deleted: false, deletedAt: "", useCount: 0, lastUsedAt: "",
-      thumbnail: String(form.thumbnail || ""), protected: Boolean(form.protected && securityConfig?.enabled), createdAt: new Date().toISOString(),
+      id: editingId || "draft", type: prepared.type, name, detail, url, tags: preparedTags, collection: preparedCollection,
+      pinned: Boolean(prepared.pinned), archived: Boolean(prepared.archived), deleted: false, deletedAt: "", useCount: 0, lastUsedAt: "",
+      thumbnail: String(prepared.thumbnail || ""), protected: Boolean(prepared.protected && securityConfig?.enabled), createdAt: new Date().toISOString(),
     });
     const duplicate = items.find((item) => item.id !== editingId && !item.deleted && normalizedDuplicateKey(item) === normalizedDuplicateKey(duplicateDraft));
     if (duplicate && !duplicateOverride) {
@@ -1541,29 +1716,34 @@ export default function DriveVaultApp() {
     const now = new Date().toISOString();
     if (!editingId) {
       const optimisticItem: VaultItem = {
-        id: createClientId(), type: form.type, name, detail, url, tags, collection,
-        pinned: Boolean(form.pinned), archived: false, deleted: false, deletedAt: "", useCount: 0, lastUsedAt: "",
-        thumbnail: form.type === "media" ? String(form.thumbnail || "") : "",
-        protected: Boolean(form.protected && securityConfig?.enabled),
+        id: createClientId(), type: prepared.type, name, detail, url, tags: preparedTags, collection: preparedCollection,
+        pinned: Boolean(prepared.pinned), archived: Boolean(prepared.archived), deleted: false, deletedAt: "", useCount: 0, lastUsedAt: "",
+        thumbnail: prepared.type === "media" ? String(prepared.thumbnail || "") : "",
+        protected: Boolean(prepared.protected && securityConfig?.enabled),
         createdAt: now, updatedAt: now, syncState: "pending",
       };
       setItems((current) => [optimisticItem, ...current]);
       try { window.localStorage.setItem(QUICK_PREFS_KEY, JSON.stringify({ type: optimisticItem.type, collection: optimisticItem.collection, tags: optimisticItem.tags } satisfies QuickPrefs)); } catch {}
       setForm(emptyForm); setTagText(""); setDuplicateCandidate(null); setDuplicateOverride(false); setShowForm(false);
       enqueue({ opId: createClientId(), type: "create", targetId: optimisticItem.id, item: optimisticItem });
-      notify(online ? "Đã thêm · đang đồng bộ" : "Đã lưu offline · chờ đồng bộ");
+      notify(applied.matched.length ? `Đã thêm · áp dụng ${applied.matched.length} Smart Rule` : (online ? "Đã thêm · đang đồng bộ" : "Đã lưu offline · chờ đồng bộ"));
       return;
     }
 
     const current = items.find((item) => item.id === editingId);
     if (!current) return setError("Không tìm thấy dữ liệu cần sửa.");
-    const updated: VaultItem = { ...current, type: form.type, name, detail, url, tags, collection, thumbnail: form.type === "media" ? String(form.thumbnail || "") : "", protected: Boolean(form.protected && securityConfig?.enabled), updatedAt: now, syncState: "pending" };
+    const updated: VaultItem = {
+      ...current, type: prepared.type, name, detail, url, tags: preparedTags, collection: preparedCollection,
+      pinned: Boolean(prepared.pinned ?? current.pinned), archived: Boolean(prepared.archived ?? current.archived),
+      thumbnail: prepared.type === "media" ? String(prepared.thumbnail || "") : "",
+      protected: Boolean(prepared.protected && securityConfig?.enabled), updatedAt: now, syncState: "pending",
+    };
     setSaving(true);
     setItems((list) => list.map((item) => item.id === editingId ? updated : item));
     setForm(emptyForm); setTagText(""); setDuplicateCandidate(null); setDuplicateOverride(false); setEditingId(null); setShowForm(false);
     enqueue({ opId: createClientId(), type: "update", targetId: updated.id, item: updated });
     setSaving(false);
-    notify(online ? "Đã cập nhật · đang đồng bộ" : "Đã cập nhật offline");
+    notify(applied.matched.length ? `Đã cập nhật · áp dụng ${applied.matched.length} Smart Rule` : (online ? "Đã cập nhật · đang đồng bộ" : "Đã cập nhật offline"));
   }
 
   function togglePin(item: VaultItem) {
@@ -1726,7 +1906,7 @@ export default function DriveVaultApp() {
   function exportJson() {
     const payload = {
       app: "DriveVault",
-      version: "2.0.0",
+      version: "2.2.0",
       exportedAt: new Date().toISOString(),
       itemCount: items.length,
       items: items.map(exportableItem),
@@ -1921,7 +2101,7 @@ export default function DriveVaultApp() {
     return <main className="lock-shell">
       <section className="lock-card">
         <div className="lock-logo app-lock-logo"><img src="/icons/icon-192.png" alt="" /></div>
-        <div className="eyebrow">DRIVEVAULT · V2.1.0</div>
+        <div className="eyebrow">DRIVEVAULT · V2.2.0</div>
         <h1>Ứng dụng đã khóa</h1>
         <p>Nhập PIN để mở kho dữ liệu trên thiết bị này.</p>
         <form className="unlock-form" onSubmit={submitUnlock}>
@@ -1940,12 +2120,13 @@ export default function DriveVaultApp() {
         <button className="brand-button" onClick={resetDashboard} aria-label="DriveVault · làm mới và xóa bộ lọc">
           <span className="brand-mark brand-logo"><img src="/icons/icon-192.png" alt="" /></span>
           <span className="brand-copy">
-            <span className="eyebrow">DRIVEVAULT · V2.1.0</span>
-            <strong>Media Library Pro</strong>
-            <small>Gallery · fullscreen · resume video · quick capture</small>
+            <span className="eyebrow">DRIVEVAULT · V2.2.0</span>
+            <strong>Smart Rules & Automation</strong>
+            <small>Automation · media player · fullscreen · quick capture</small>
           </span>
         </button>
         <div className="top-actions">
+          <button className={`icon-button ${smartRules.some((rule) => rule.enabled) ? "automation-on" : ""}`} aria-label="Smart Rules & Automation" onClick={() => setShowRules(true)}><Zap size={19}/></button>
           <button className={`icon-button ${securityConfig?.enabled ? "security-on" : ""}`} aria-label="Security & App Lock" onClick={openSecuritySettings}>{securityConfig?.enabled ? <Lock size={19}/> : <ShieldCheck size={19}/>}</button>
           <button className="icon-button" aria-label="Backup & Data Portability" onClick={openDataTools}><Database size={19} /></button>
           <button className="icon-button" aria-label="Đổi giao diện sáng tối" onClick={() => setTheme((t) => t === "dark" ? "light" : "dark")}>{theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}</button>
@@ -2087,6 +2268,58 @@ export default function DriveVaultApp() {
             <div className="filter-footer">
               <button className="secondary" onClick={resetAdvanced}>Đặt lại</button>
               <button className="primary" onClick={() => setAdvancedOpen(false)}>Áp dụng {activeFilterCount > 0 ? `· ${activeFilterCount} bộ lọc` : ""}</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {showRules && (
+        <div className="modal-backdrop automation-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !runningRules) setShowRules(false); }}>
+          <section className="modal automation-sheet" role="dialog" aria-modal="true" aria-labelledby="automation-title">
+            <div className="sheet-handle" />
+            <div className="modal-head">
+              <div><div className="eyebrow">V2.2 · SMART RULES</div><h2 id="automation-title">Tự động hóa</h2></div>
+              <button className="icon-button" onClick={() => setShowRules(false)} disabled={runningRules}><X size={20}/></button>
+            </div>
+            <div className="automation-content">
+              <section className="automation-summary">
+                <div><Zap size={18}/><span><strong>{smartRules.filter((rule) => rule.enabled).length}</strong><small>rule đang bật</small></span></div>
+                <button className="secondary" disabled={runningRules} onClick={() => void runRulesOnExistingData()}>{runningRules ? <Loader2 size={15} className="spin"/> : <RefreshCcw size={15}/>} Chạy trên dữ liệu cũ</button>
+              </section>
+
+              <section className="filter-section automation-builder">
+                <div className="filter-section-title"><strong>Tạo rule mới</strong><span>Nếu điều kiện khớp → tự gắn loại, phân loại, tag...</span></div>
+                <div className="automation-grid">
+                  <label>Tên rule<input value={ruleDraft.name} maxLength={80} onChange={(e) => setRuleDraft((r) => ({ ...r, name: e.target.value }))} placeholder="VD: Shopee → Mua sắm"/></label>
+                  <label>Kiểm tra<select value={ruleDraft.field} onChange={(e) => setRuleDraft((r) => ({ ...r, field: e.target.value as SmartRuleField }))}><option value="url">URL</option><option value="name">Tên</option><option value="detail">Nội dung</option><option value="any">Tên + Nội dung + URL</option></select></label>
+                  <label>Điều kiện<select value={ruleDraft.operator} onChange={(e) => setRuleDraft((r) => ({ ...r, operator: e.target.value as SmartRuleOperator }))}><option value="contains">Chứa</option><option value="startsWith">Bắt đầu bằng</option><option value="endsWith">Kết thúc bằng</option><option value="equals">Bằng chính xác</option></select></label>
+                  <label className="automation-value">Giá trị<input value={ruleDraft.value} maxLength={200} onChange={(e) => setRuleDraft((r) => ({ ...r, value: e.target.value }))} placeholder="shopee.vn hoặc SQL"/></label>
+                  <label>Đổi loại<select value={ruleDraft.setType || ""} onChange={(e) => setRuleDraft((r) => ({ ...r, setType: e.target.value as StorageType | "" }))}><option value="">Giữ nguyên</option><option value="media">Ảnh / Video</option><option value="content">Nội dung</option><option value="other">Khác</option></select></label>
+                  <label>Phân loại<input list="automation-collections" value={ruleDraft.collection || ""} onChange={(e) => setRuleDraft((r) => ({ ...r, collection: e.target.value }))} placeholder="Giữ nguyên"/><datalist id="automation-collections">{collections.map((name) => <option key={name} value={name}/>)}</datalist></label>
+                  <label className="automation-tags">Tag<input value={ruleTagText} onChange={(e) => setRuleTagText(e.target.value)} placeholder="video, shopee, SQL"/></label>
+                </div>
+                <div className="automation-switches">
+                  <label><input type="checkbox" checked={Boolean(ruleDraft.pinned)} onChange={(e) => setRuleDraft((r) => ({ ...r, pinned: e.target.checked }))}/><span>Ghim</span></label>
+                  <label><input type="checkbox" checked={Boolean(ruleDraft.archived)} onChange={(e) => setRuleDraft((r) => ({ ...r, archived: e.target.checked }))}/><span>Lưu trữ</span></label>
+                  <label className={!securityConfig?.enabled ? "disabled" : ""}><input type="checkbox" disabled={!securityConfig?.enabled} checked={Boolean(ruleDraft.protected)} onChange={(e) => setRuleDraft((r) => ({ ...r, protected: e.target.checked }))}/><span>Bảo vệ</span></label>
+                </div>
+                <button className="primary automation-add" onClick={addSmartRule}><Plus size={16}/> Thêm Smart Rule</button>
+              </section>
+
+              <section className="automation-list">
+                <div className="filter-section-title"><strong>Rule hiện có</strong><span>Rule chạy theo thứ tự từ trên xuống; nhiều rule có thể cùng áp dụng.</span></div>
+                {smartRules.length === 0 ? <div className="automation-empty">Chưa có Smart Rule.</div> : smartRules.map((rule) => (
+                  <article className={`automation-rule ${rule.enabled ? "enabled" : ""}`} key={rule.id}>
+                    <button className={`automation-toggle ${rule.enabled ? "on" : ""}`} onClick={() => toggleSmartRule(rule.id)} aria-label={rule.enabled ? "Tắt rule" : "Bật rule"}><span/></button>
+                    <div className="automation-rule-copy">
+                      <strong>{rule.name}</strong>
+                      <span>Nếu {rule.field === "url" ? "URL" : rule.field === "name" ? "Tên" : rule.field === "detail" ? "Nội dung" : "bất kỳ trường"} {rule.operator === "contains" ? "chứa" : rule.operator === "startsWith" ? "bắt đầu bằng" : rule.operator === "endsWith" ? "kết thúc bằng" : "bằng"} “{rule.value}”</span>
+                      <div>{rule.setType && <small>{typeMeta[rule.setType].label}</small>}{rule.collection && <small>{rule.collection}</small>}{rule.tags.map((tag) => <small key={tag}>#{tag}</small>)}{rule.pinned && <small>Ghim</small>}{rule.archived && <small>Lưu trữ</small>}{rule.protected && <small>Bảo vệ</small>}</div>
+                    </div>
+                    <button className="automation-delete" onClick={() => removeSmartRule(rule.id)} aria-label={`Xóa ${rule.name}`}><Trash2 size={16}/></button>
+                  </article>
+                ))}
+              </section>
             </div>
           </section>
         </div>
