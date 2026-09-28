@@ -9,6 +9,7 @@ import {
   ArrowUp,
   Check,
   CheckSquare2,
+  ChevronLeft,
   ChevronRight,
   Clipboard,
   Cloud,
@@ -19,13 +20,16 @@ import {
   FileText,
   Folder,
   FolderInput,
+  Grid3X3,
   Image as ImageIcon,
   Layers3,
+  List,
   Loader2,
   Moon,
   Pencil,
   Pin,
   PinOff,
+  Play,
   Plus,
   RefreshCcw,
   Search,
@@ -59,6 +63,8 @@ const SECURITY_KEY = "drivevault-v170-security";
 const QUICK_PREFS_KEY = "drivevault-v200-quick-prefs";
 const QUICK_TEMPLATES_KEY = "drivevault-v200-quick-templates";
 const HOME_CONFIG_KEY = "drivevault-v200-home-config";
+const MEDIA_PROGRESS_KEY = "drivevault-v210-media-progress";
+const MEDIA_KIND_CACHE_KEY = "drivevault-v210-media-kind-cache";
 const DELETE_UNDO_MS = 5000;
 
 const typeMeta: Record<StorageType, { label: string; icon: typeof ImageIcon; className: string }> = {
@@ -73,6 +79,9 @@ type SearchField = "name" | "detail" | "url" | "tags" | "collection";
 type BulkMode = "archive" | "restore" | "pin" | "unpin" | "move" | "delete" | "restoreTrash" | "purge";
 type LinkFilter = "all" | "with" | "without";
 type DensityMode = "compact" | "comfortable";
+type MediaKind = "image" | "video" | "unknown";
+type MediaKindFilter = "all" | "image" | "video";
+type MediaViewMode = "grid" | "list";
 
 type QuickTemplate = {
   id: string;
@@ -440,6 +449,52 @@ function analyzeLink(value: string): LinkIntel {
   }
 }
 
+function inferMediaKind(item: VaultItem): MediaKind {
+  const intel = analyzeLink(item.url);
+  const text = `${item.name} ${item.detail} ${item.tags.join(" ")}`.toLowerCase();
+  if (intel.kind === "direct-image" || /(^|\s)(ảnh|image|photo|picture)(\s|$)/i.test(text)) return "image";
+  if (intel.kind === "youtube" || intel.kind === "direct-video" || /(^|\s)(video|clip|youtube|tiktok)(\s|$)/i.test(text)) return "video";
+  if (/\.(png|jpe?g|gif|webp|avif)\b/i.test(item.name) || /\.(png|jpe?g|gif|webp|avif)(?:$|\?)/i.test(item.url)) return "image";
+  if (/\.(mp4|webm|mov|m4v|ogv)\b/i.test(item.name) || /\.(mp4|webm|mov|m4v|ogv)(?:$|\?)/i.test(item.url)) return "video";
+  return "unknown";
+}
+
+function mediaThumbSource(item: VaultItem) {
+  const intel = analyzeLink(item.url);
+  return item.thumbnail || intel.thumbnailUrl || "";
+}
+
+function readMediaProgress(itemId: string) {
+  if (typeof window === "undefined") return 0;
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(MEDIA_PROGRESS_KEY) || "{}") as Record<string, number>;
+    const value = Number(raw[itemId] || 0);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch { return 0; }
+}
+
+function writeMediaProgress(itemId: string, seconds: number) {
+  if (typeof window === "undefined" || !Number.isFinite(seconds) || seconds < 0) return;
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(MEDIA_PROGRESS_KEY) || "{}") as Record<string, number>;
+    raw[itemId] = Math.round(seconds * 10) / 10;
+    window.localStorage.setItem(MEDIA_PROGRESS_KEY, JSON.stringify(raw));
+  } catch {}
+}
+
+function readMediaKindCache(): Record<string, MediaKind> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(MEDIA_KIND_CACHE_KEY) || "{}") as Record<string, MediaKind>;
+    return raw && typeof raw === "object" ? raw : {};
+  } catch { return {}; }
+}
+
+function writeMediaKindCache(value: Record<string, MediaKind>) {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(MEDIA_KIND_CACHE_KEY, JSON.stringify(value)); } catch {}
+}
+
 function inferQuickCapture(value: string): { type: StorageType; collection: string; tags: string[]; label: string } {
   const normalized = normalizeUrl(value);
   if (!normalized) return { type: "content", collection: "Chưa phân loại", tags: [], label: "Nội dung" };
@@ -485,6 +540,7 @@ function MediaDetailPreview({ item }: { item: VaultItem }) {
   const [driveImageFailed, setDriveImageFailed] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const resolvedKind = (typeof window !== "undefined" ? readMediaKindCache()[item.id] : undefined) || inferMediaKind(item);
   if (!item.url) return null;
 
   if (intel.kind === "direct-image") {
@@ -495,10 +551,20 @@ function MediaDetailPreview({ item }: { item: VaultItem }) {
     </div>;
   }
 
-  if ((intel.kind === "drive-file" || intel.kind === "direct-video") && intel.streamUrl && !videoFailed) {
+  if (intel.kind === "drive-file" && intel.streamUrl && resolvedKind === "image" && !driveImageFailed) {
+    return <div className="media-viewer-shell" ref={stageRef}>
+      <button className="media-fullscreen" onClick={() => requestElementFullscreen(stageRef.current)} aria-label="Xem ảnh toàn màn hình"><Maximize2 size={17}/></button>
+      <img className="inapp-image" src={intel.streamUrl} alt={item.name} onError={() => setDriveImageFailed(true)} />
+    </div>;
+  }
+
+  if (((intel.kind === "drive-file" && resolvedKind !== "image") || intel.kind === "direct-video") && intel.streamUrl && !videoFailed) {
     return <div className="media-viewer-shell video-shell" ref={stageRef}>
       <button className="media-fullscreen" onClick={() => requestElementFullscreen(stageRef.current)} aria-label="Xem video toàn màn hình"><Maximize2 size={17}/></button>
-      <video className="inapp-video" controls playsInline preload="metadata" poster={item.thumbnail || intel.thumbnailUrl} src={intel.streamUrl} onTimeUpdate={() => window.dispatchEvent(new Event("drivevault-activity"))} onError={() => setVideoFailed(true)} />
+      <video className="inapp-video" controls playsInline preload="metadata" poster={item.thumbnail || intel.thumbnailUrl} src={intel.streamUrl}
+        onLoadedMetadata={(e) => { const saved = readMediaProgress(item.id); if (saved > 2 && saved < Math.max(0, e.currentTarget.duration - 5)) e.currentTarget.currentTime = saved; }}
+        onTimeUpdate={(e) => { writeMediaProgress(item.id, e.currentTarget.currentTime); window.dispatchEvent(new Event("drivevault-activity")); }}
+        onEnded={() => writeMediaProgress(item.id, 0)} onError={() => setVideoFailed(true)} />
     </div>;
   }
 
@@ -718,9 +784,87 @@ function SwipeCard({
   );
 }
 
+
+function MediaLibraryTile({ item, kind, selectionMode, checked, onSelect, onOpenGallery, onOpenDetail }: {
+  item: VaultItem;
+  kind: MediaKind;
+  selectionMode: boolean;
+  checked: boolean;
+  onSelect: () => void;
+  onOpenGallery: () => void;
+  onOpenDetail: () => void;
+}) {
+  const [failed, setFailed] = useState(false);
+  const source = mediaThumbSource(item);
+  const open = () => {
+    if (selectionMode) return onSelect();
+    if (item.protected || item.deleted || item.archived) return onOpenDetail();
+    onOpenGallery();
+  };
+  return <article className={`media-library-tile ${checked ? "selected" : ""} ${item.protected ? "protected" : ""}`} onClick={open}>
+    <div className="media-library-cover">
+      {!item.protected && source && !failed ? <img src={source} alt={item.name} loading="lazy" onError={() => setFailed(true)} /> : <div className="media-library-placeholder">{item.protected ? <Lock size={24}/> : <ImageIcon size={25}/>}<span>{item.protected ? "Được bảo vệ" : "Chưa có thumbnail"}</span></div>}
+      {kind === "video" && !item.protected && <span className="media-play-badge"><Play size={18} fill="currentColor"/></span>}
+      <span className="media-kind-badge">{kind === "image" ? "Ảnh" : kind === "video" ? "Video" : "Media"}</span>
+      {item.pinned && <span className="media-pin-badge"><Pin size={13}/></span>}
+      {selectionMode && <button className={`media-select ${checked ? "checked" : ""}`} onClick={(e) => { e.stopPropagation(); onSelect(); }} aria-label={checked ? "Bỏ chọn" : "Chọn media"}>{checked ? <Check size={16}/> : <Square size={16}/>}</button>}
+    </div>
+    <div className="media-library-info">
+      <div><strong>{item.name}</strong><span><Folder size={11}/>{item.collection}</span></div>
+      {!selectionMode && <button onClick={(e) => { e.stopPropagation(); onOpenDetail(); }} aria-label="Xem chi tiết"><ChevronRight size={18}/></button>}
+    </div>
+  </article>;
+}
+
+function MediaGallery({ items, activeId, onChange, onClose, onDetail }: {
+  items: VaultItem[];
+  activeId: string;
+  onChange: (id: string) => void;
+  onClose: () => void;
+  onDetail: (item: VaultItem) => void;
+}) {
+  const index = Math.max(0, items.findIndex((item) => item.id === activeId));
+  const item = items[index];
+  const startX = useRef<number | null>(null);
+  const next = useCallback((delta: number) => {
+    if (!items.length) return;
+    const target = (index + delta + items.length) % items.length;
+    onChange(items[target].id);
+  }, [index, items, onChange]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+      if (event.key === "ArrowLeft") next(-1);
+      if (event.key === "ArrowRight") next(1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [next, onClose]);
+
+  if (!item) return null;
+  return <div className="media-gallery-backdrop" role="dialog" aria-modal="true" aria-label={`Gallery ${item.name}`}
+    onPointerDown={(e) => { startX.current = e.clientX; }}
+    onPointerUp={(e) => { if (startX.current === null) return; const dx = e.clientX - startX.current; startX.current = null; if (Math.abs(dx) > 55) next(dx < 0 ? 1 : -1); }}>
+    <header className="media-gallery-head">
+      <div><span>{index + 1}/{items.length}</span><strong>{item.name}</strong><small>{item.collection}</small></div>
+      <div><button onClick={() => onDetail(item)} aria-label="Chi tiết"><FileText size={19}/></button><button onClick={onClose} aria-label="Đóng gallery"><X size={21}/></button></div>
+    </header>
+    <div className="media-gallery-stage">
+      <MediaDetailPreview key={item.id} item={item}/>
+    </div>
+    {items.length > 1 && <><button className="gallery-nav gallery-prev" onClick={(e) => { e.stopPropagation(); next(-1); }} aria-label="Media trước"><ChevronLeft size={25}/></button><button className="gallery-nav gallery-next" onClick={(e) => { e.stopPropagation(); next(1); }} aria-label="Media sau"><ChevronRight size={25}/></button></>}
+    <footer className="media-gallery-footer"><span>Vuốt ngang để chuyển media</span><a href={item.url} target="_blank" rel="noreferrer"><ExternalLink size={15}/> Mở link gốc</a></footer>
+  </div>;
+}
+
 export default function DriveVaultApp() {
   const [items, setItems] = useState<VaultItem[]>([]);
   const [typeFilter, setTypeFilter] = useState<"all" | StorageType>("all");
+  const [mediaKindFilter, setMediaKindFilter] = useState<MediaKindFilter>("all");
+  const [mediaViewMode, setMediaViewMode] = useState<MediaViewMode>("grid");
+  const [mediaGalleryId, setMediaGalleryId] = useState<string | null>(null);
+  const [mediaKindCache, setMediaKindCache] = useState<Record<string, MediaKind>>({});
   const [libraryMode, setLibraryMode] = useState<LibraryMode>("all");
   const [selectedTag, setSelectedTag] = useState("all");
   const [selectedCollection, setSelectedCollection] = useState("all");
@@ -1192,6 +1336,31 @@ export default function DriveVaultApp() {
   }, [form.name, form.detail, form.url]);
 
 
+  useEffect(() => { setMediaKindCache(readMediaKindCache()); }, []);
+
+  useEffect(() => {
+    if (typeFilter !== "media") return;
+    const unresolved = items.filter((item) => item.type === "media" && !item.deleted && inferMediaKind(item) === "unknown" && analyzeLink(item.url).kind === "drive-file" && !mediaKindCache[item.id]);
+    if (!unresolved.length) return;
+    let cancelled = false;
+    const run = async () => {
+      const next: Record<string, MediaKind> = {};
+      for (const item of unresolved.slice(0, 24)) {
+        const intel = analyzeLink(item.url);
+        if (!intel.fileId) continue;
+        try {
+          const response = await fetch(`/api/media?fileId=${encodeURIComponent(intel.fileId)}&meta=1`, { cache: "no-store" });
+          if (!response.ok) continue;
+          const data = await response.json() as { kind?: MediaKind };
+          if (data.kind === "image" || data.kind === "video") next[item.id] = data.kind;
+        } catch {}
+      }
+      if (!cancelled && Object.keys(next).length) setMediaKindCache((current) => { const merged = { ...current, ...next }; writeMediaKindCache(merged); return merged; });
+    };
+    void run();
+    return () => { cancelled = true; };
+  }, [typeFilter, items, mediaKindCache]);
+
   useEffect(() => {
     const onScroll = () => {
       setShowScrollTop(window.scrollY > 180);
@@ -1205,7 +1374,7 @@ export default function DriveVaultApp() {
   }, []);
 
   useEffect(() => {
-    if (!showForm && !selected && !showDataTools && !advancedOpen && !showSecurity && !protectedTargetId) return;
+    if (!showForm && !selected && !showDataTools && !advancedOpen && !showSecurity && !protectedTargetId && !mediaGalleryId) return;
     const scrollY = window.scrollY;
     const body = document.body;
     const previous = { position: body.style.position, top: body.style.top, left: body.style.left, right: body.style.right, width: body.style.width, overflow: body.style.overflow };
@@ -1216,7 +1385,7 @@ export default function DriveVaultApp() {
     body.style.width = "100%";
     body.style.overflow = "hidden";
     return () => { Object.assign(body.style, previous); window.scrollTo(0, scrollY); };
-  }, [showForm, selected, showDataTools, advancedOpen, showSecurity, protectedTargetId]);
+  }, [showForm, selected, showDataTools, advancedOpen, showSecurity, protectedTargetId, mediaGalleryId]);
 
   const liveItems = useMemo(() => items.filter((item) => !item.deleted), [items]);
   const allTags = useMemo(() => Array.from(new Set(liveItems.flatMap((item) => item.tags))).sort((a, b) => a.localeCompare(b, "vi")), [liveItems]);
@@ -1291,6 +1460,12 @@ export default function DriveVaultApp() {
       return String(b.createdAt).localeCompare(String(a.createdAt));
     });
   }, [items, typeFilter, libraryMode, selectedTag, selectedCollection, search, sortMode, dateFrom, dateTo, linkFilter, searchFields]);
+
+  const visibleItems = useMemo(() => {
+    if (typeFilter !== "media" || mediaKindFilter === "all") return filtered;
+    return filtered.filter((item) => (mediaKindCache[item.id] || inferMediaKind(item)) === mediaKindFilter);
+  }, [filtered, mediaKindCache, mediaKindFilter, typeFilter]);
+  const mediaGalleryItems = useMemo(() => visibleItems.filter((item) => item.type === "media" && !item.deleted && !item.archived && !item.protected), [visibleItems]);
 
   function handleSmartUrlChange(value: string) {
     const normalized = normalizeUrl(value);
@@ -1693,7 +1868,7 @@ export default function DriveVaultApp() {
   }
 
   function resetDashboard() {
-    setSearch(""); setTypeFilter("all"); setLibraryMode("all"); setSelectedTag("all"); setSelectedCollection("all");
+    setSearch(""); setTypeFilter("all"); setMediaKindFilter("all"); setMediaViewMode("grid"); setMediaGalleryId(null); setLibraryMode("all"); setSelectedTag("all"); setSelectedCollection("all");
     setSortMode("smart"); setDateFrom(""); setDateTo(""); setLinkFilter("all");
     setSearchFields({ name: true, detail: true, url: true, tags: true, collection: true });
     setAdvancedOpen(false); exitSelection();
@@ -1723,18 +1898,18 @@ export default function DriveVaultApp() {
   const activeFilterCount = [
     libraryMode !== "all", sortMode !== "smart", selectedTag !== "all", selectedCollection !== "all",
     Boolean(dateFrom), Boolean(dateTo), linkFilter !== "all", selectionMode,
-    Object.values(searchFields).some((value) => !value),
+    Object.values(searchFields).some((value) => !value), typeFilter === "media" && mediaKindFilter !== "all",
   ].filter(Boolean).length;
 
-  const homeReady = !search.trim() && typeFilter === "all" && libraryMode === "all" && selectedTag === "all" && selectedCollection === "all" && !dateFrom && !dateTo && linkFilter === "all" && !selectionMode;
+  const homeReady = !search.trim() && typeFilter === "all" && mediaKindFilter === "all" && libraryMode === "all" && selectedTag === "all" && selectedCollection === "all" && !dateFrom && !dateTo && linkFilter === "all" && !selectionMode;
   const homeSource = liveItems.filter((item) => !item.archived);
   const homePinned = homeSource.filter((item) => item.pinned).slice(0, 6);
   const homeRecent = [...homeSource].filter((item) => item.lastUsedAt).sort((a, b) => String(b.lastUsedAt).localeCompare(String(a.lastUsedAt))).slice(0, 6);
   const homeFrequent = [...homeSource].filter((item) => item.useCount > 0).sort((a, b) => b.useCount - a.useCount).slice(0, 6);
   const favoriteCollectionStats = homeConfig.favoriteCollections.map((name) => ({ name, count: homeSource.filter((item) => item.collection === name).length })).filter((entry) => entry.count > 0);
 
-  const visibleSelectedCount = filtered.filter((item) => selectedIds.has(item.id)).length;
-  const allVisibleSelected = filtered.length > 0 && visibleSelectedCount === filtered.length;
+  const visibleSelectedCount = visibleItems.filter((item) => selectedIds.has(item.id)).length;
+  const allVisibleSelected = visibleItems.length > 0 && visibleSelectedCount === visibleItems.length;
 
   if (!securityReady) {
     return <main className="lock-shell"><div className="lock-card"><div className="lock-logo app-lock-logo"><img src="/icons/icon-192.png" alt="" /></div><strong>DriveVault</strong><span>Đang khởi tạo bảo mật...</span></div></main>;
@@ -1744,7 +1919,7 @@ export default function DriveVaultApp() {
     return <main className="lock-shell">
       <section className="lock-card">
         <div className="lock-logo app-lock-logo"><img src="/icons/icon-192.png" alt="" /></div>
-        <div className="eyebrow">DRIVEVAULT · V2.0.0</div>
+        <div className="eyebrow">DRIVEVAULT · V2.1.0</div>
         <h1>Ứng dụng đã khóa</h1>
         <p>Nhập PIN để mở kho dữ liệu trên thiết bị này.</p>
         <form className="unlock-form" onSubmit={submitUnlock}>
@@ -1763,9 +1938,9 @@ export default function DriveVaultApp() {
         <button className="brand-button" onClick={resetDashboard} aria-label="DriveVault · làm mới và xóa bộ lọc">
           <span className="brand-mark brand-logo"><img src="/icons/icon-192.png" alt="" /></span>
           <span className="brand-copy">
-            <span className="eyebrow">DRIVEVAULT · V2.0.0</span>
-            <strong>Personal Vault Pro</strong>
-            <small>Quick Capture · PWA · Smart personal dashboard</small>
+            <span className="eyebrow">DRIVEVAULT · V2.1.0</span>
+            <strong>Media Library Pro</strong>
+            <small>Gallery · fullscreen · resume video · quick capture</small>
           </span>
         </button>
         <div className="top-actions">
@@ -1792,8 +1967,17 @@ export default function DriveVaultApp() {
         </div>
 
         <div className="chips storage-type-chips" role="tablist" aria-label="Lọc loại lưu trữ">
-          {(["all", "media", "content", "other"] as const).map((key) => <button key={key} className={`chip ${typeFilter === key ? "active" : ""}`} onClick={() => setTypeFilter(key)}>{key === "all" ? "Tất cả loại" : typeMeta[key].label}</button>)}
+          {(["all", "media", "content", "other"] as const).map((key) => <button key={key} className={`chip ${typeFilter === key ? "active" : ""}`} onClick={() => { setTypeFilter(key); if (key !== "media") setMediaKindFilter("all"); }}>{key === "all" ? "Tất cả loại" : typeMeta[key].label}</button>)}
         </div>
+        {typeFilter === "media" && <div className="media-pro-toolbar">
+          <div className="media-kind-tabs" aria-label="Lọc thư viện media">
+            {([['all','Tất cả'],['image','Ảnh'],['video','Video']] as [MediaKindFilter,string][]).map(([key,label]) => <button key={key} className={mediaKindFilter === key ? "active" : ""} onClick={() => setMediaKindFilter(key)}>{label}</button>)}
+          </div>
+          <div className="media-view-switch" aria-label="Kiểu hiển thị media">
+            <button className={mediaViewMode === "grid" ? "active" : ""} onClick={() => setMediaViewMode("grid")} aria-label="Dạng gallery"><Grid3X3 size={16}/></button>
+            <button className={mediaViewMode === "list" ? "active" : ""} onClick={() => setMediaViewMode("list")} aria-label="Dạng danh sách"><List size={16}/></button>
+          </div>
+        </div>}
       </section>
 
       {homeReady && (homePinned.length > 0 || homeRecent.length > 0 || homeFrequent.length > 0 || favoriteCollectionStats.length > 0) && (
@@ -1906,12 +2090,14 @@ export default function DriveVaultApp() {
 
       {error && <div className="alert">{error}</div>}
 
-      <section className="list" aria-live="polite">
+      <section className={`${typeFilter === "media" && mediaViewMode === "grid" ? "media-library-grid" : "list"}`} aria-live="polite">
         {loading && items.length === 0 ? (
-          <div className="state"><Loader2 className="spin" /><span>Đang tải dữ liệu...</span></div>
-        ) : filtered.length === 0 ? (
-          <div className="empty"><Layers3 size={34} /><strong>Chưa có dữ liệu phù hợp</strong><span>Thử đổi bộ lọc hoặc bấm + để tạo mục mới.</span></div>
-        ) : filtered.map((item) => (
+          <div className="state media-library-state"><Loader2 className="spin" /><span>Đang tải dữ liệu...</span></div>
+        ) : visibleItems.length === 0 ? (
+          <div className="empty media-library-state"><Layers3 size={34} /><strong>Chưa có dữ liệu phù hợp</strong><span>Thử đổi bộ lọc hoặc bấm + để tạo mục mới.</span></div>
+        ) : typeFilter === "media" && mediaViewMode === "grid" ? visibleItems.map((item) => (
+          <MediaLibraryTile key={item.id} item={item} kind={mediaKindCache[item.id] || inferMediaKind(item)} selectionMode={selectionMode} checked={selectedIds.has(item.id)} onSelect={() => toggleSelection(item.id)} onOpenGallery={() => setMediaGalleryId(item.id)} onOpenDetail={() => openItem(item)} />
+        )) : visibleItems.map((item) => (
           <SwipeCard
             key={item.id}
             item={item}
@@ -2071,6 +2257,8 @@ export default function DriveVaultApp() {
           </section>
         </div>
       )}
+
+      {mediaGalleryId && mediaGalleryItems.length > 0 && <MediaGallery items={mediaGalleryItems} activeId={mediaGalleryId} onChange={setMediaGalleryId} onClose={() => setMediaGalleryId(null)} onDetail={(item) => { setMediaGalleryId(null); window.setTimeout(() => openItem(item), 0); }} />}
 
       {showForm && (
         <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) setShowForm(false); }}>

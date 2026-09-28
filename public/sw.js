@@ -1,4 +1,4 @@
-const CACHE = "drivevault-v200-shell-v1";
+const CACHE = "drivevault-v210-shell-v1";
 const SHELL = ["/", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
 
 self.addEventListener("install", (event) => {

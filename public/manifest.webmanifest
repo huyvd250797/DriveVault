@@ -1,7 +1,7 @@
 {
   "name": "DriveVault",
   "short_name": "DriveVault",
-  "description": "Personal Vault Pro & Quick Capture - kho lưu trữ cá nhân, media, nội dung và liên kết dùng nhanh.",
+  "description": "DriveVault V2.1.0 - Media Library Pro & Quick Capture",
   "id": "/",
   "start_url": "/",
   "scope": "/",
@@ -10,10 +10,23 @@
   "background_color": "#0a0c11",
   "theme_color": "#0a0c11",
   "lang": "vi",
-  "categories": ["productivity", "utilities"],
+  "categories": [
+    "productivity",
+    "utilities"
+  ],
   "icons": [
-    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
   ],
   "shortcuts": [
     {
@@ -21,7 +34,13 @@
       "short_name": "Thêm nhanh",
       "description": "Mở Quick Capture để lưu ngay",
       "url": "/?quick=1",
-      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+      "icons": [
+        {
+          "src": "/icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
     }
   ],
   "share_target": {

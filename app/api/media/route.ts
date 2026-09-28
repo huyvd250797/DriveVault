@@ -14,10 +14,12 @@ export async function GET(request: NextRequest) {
   }
 
   const range = request.headers.get("range");
+  const metadataOnly = request.nextUrl.searchParams.get("meta") === "1";
   const upstreamUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
   const headers = new Headers();
-  if (range) headers.set("range", range);
-  headers.set("user-agent", "DriveVault/1.7");
+  if (metadataOnly) headers.set("range", "bytes=0-0");
+  else if (range) headers.set("range", range);
+  headers.set("user-agent", "DriveVault/2.1");
 
   try {
     const upstream = await fetch(upstreamUrl, {
@@ -28,6 +30,12 @@ export async function GET(request: NextRequest) {
 
     if (!upstream.ok && upstream.status !== 206) {
       return new Response("Không đọc được media từ Google Drive. Hãy kiểm tra quyền chia sẻ link.", { status: upstream.status || 502 });
+    }
+
+    if (metadataOnly) {
+      const contentType = upstream.headers.get("content-type") || "";
+      const kind = contentType.startsWith("image/") ? "image" : contentType.startsWith("video/") ? "video" : "unknown";
+      return Response.json({ contentType, kind });
     }
 
     const responseHeaders = new Headers();

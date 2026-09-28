@@ -17,19 +17,25 @@
 - ✅ **V1.7.0 – Security & App Lock + Media Pro**
   - PIN App Lock, protected item, fullscreen image/video, custom video thumbnail.
 - ✅ **V2.0.0 – Personal Vault Pro & Quick Capture**
-  - Không đăng nhập; tiếp tục dùng Google Sheets/Drive làm kho dữ liệu cá nhân.
-  - PWA cài như app, dùng logo DriveVault làm app icon/favicon/Apple icon.
-  - Quick Capture nhớ loại/phân loại/tag gần nhất.
-  - Quick Templates cục bộ trên thiết bị.
-  - Smart Link nhận diện Drive/YouTube/Shopee/Lazada/TikTok/link web và gợi ý loại/phân loại/tag.
-  - PWA Share Target: chia sẻ link/text từ điện thoại vào DriveVault để mở form đã điền sẵn.
-  - Duplicate warning trước khi lưu.
-  - Personal dashboard tùy biến: Đã ghim, Gần đây, Dùng nhiều, phân loại yêu thích.
-  - Compact / Comfortable density.
-  - Cache-first startup + service worker app shell.
-- ⏭️ **V2.1.0 – Media Library Pro**
-  - Grid media riêng cho ảnh/video.
-  - Album/Gallery fullscreen và swipe ảnh.
-  - Video nhớ vị trí xem dở.
-  - Cover/thumbnail manager nâng cao.
-  - Lọc Ảnh / Video độc lập và bulk media actions.
+  - PWA, Quick Capture, Smart Link, templates, duplicate warning, personal dashboard.
+- ✅ **V2.1.0 – Media Library Pro**
+  - Media Grid / List riêng cho Ảnh & Video.
+  - Gallery fullscreen trong app, swipe Previous/Next.
+  - Filter Ảnh / Video; Drive MIME detection + local cache.
+  - Video HTML5 nhớ vị trí xem dở.
+  - Cover/thumbnail tiếp tục dùng custom frame đã chọn.
+  - Bulk selection hoạt động trực tiếp trong Media Grid.
+  - Fix sticky Search/Filter theo `safe-area-inset-top` để không đè vùng giờ/pin/Dynamic Island iPhone.
+- ⏭️ **V2.2.0 – Smart Rules & Automation**
+  - Tạo rule theo domain, URL, tag, nội dung.
+  - Auto Classification / Auto Tag / Auto Pin.
+  - Rule mẫu cho Shopee, YouTube, Drive, TikTok.
+  - Chạy rule cho dữ liệu mới hoặc apply lại dữ liệu cũ.
+  - Preview thay đổi trước khi bulk apply.
+
+## Sau V2.2.0
+
+- **V2.3.0 – Version History & Recovery**
+- **V2.4.0 – Personal Dashboard & Insights**
+- **V2.5.0 – Privacy & Encryption Pro**
+- **V3.0.0 – Personal Knowledge Vault**
