@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
   const headers = new Headers();
   if (metadataOnly) headers.set("range", "bytes=0-0");
   else if (range) headers.set("range", range);
-  headers.set("user-agent", "DriveVault/2.1");
+  headers.set("user-agent", "DriveVault/2.2-media-fix1");
 
   try {
     const upstream = await fetch(upstreamUrl, {
@@ -47,7 +47,6 @@ export async function GET(request: NextRequest) {
     }
     responseHeaders.set("cache-control", "private, max-age=300");
     responseHeaders.set("content-disposition", "inline");
-    responseHeaders.set("x-content-type-options", "nosniff");
 
     return new Response(upstream.body, {
       status: upstream.status,

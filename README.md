@@ -2,6 +2,15 @@
 
 V2.2.0 nâng cấp trực tiếp từ V2.1.0 Header/Safe-Area Fix 2. Bản này tập trung vào tự động hóa thao tác lưu dữ liệu và sửa lại trình phát video để xem video Google Drive trực tiếp trong DriveVault ổn định hơn.
 
+## Media Player Fix 1
+
+- Khôi phục HTML5 player của DriveVault làm player chính cho video Google Drive.
+- Chỉ còn **một** nút fullscreen do DriveVault quản lý trong player chính.
+- Control fullscreen nằm cùng thanh điều khiển của app nên không bị progress/iframe che trên iPhone.
+- Google Drive Preview chỉ được dùng làm **fallback tương thích** khi trình duyệt thật sự không giải mã được video gốc; ở fallback DriveVault không chèn thêm nút fullscreen để tránh trùng icon.
+- Tự phát hiện trường hợp video có audio nhưng không có khung hình (`videoWidth = 0`) và chuyển fallback.
+
+
 ## 1. Smart Rules & Automation
 
 Trong Header có thêm nút biểu tượng tia sét để mở **Smart Rules**.

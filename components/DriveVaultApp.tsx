@@ -30,6 +30,7 @@ import {
   Pin,
   PinOff,
   Play,
+  Pause,
   Plus,
   RefreshCcw,
   Search,
@@ -604,36 +605,221 @@ function MediaThumbnail({ item }: { item: VaultItem }) {
   return <div className="media-thumbnail"><img src={source} alt={`Thumbnail ${item.name}`} loading="lazy" onError={() => setFailed(true)} /></div>;
 }
 
+function formatMediaTime(value: number) {
+  if (!Number.isFinite(value) || value < 0) return "0:00";
+  const total = Math.floor(value);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+type IOSVideoElement = HTMLVideoElement & {
+  webkitEnterFullscreen?: () => void;
+  webkitDisplayingFullscreen?: boolean;
+};
+
+function InAppVideoPlayer({ item, src, poster, fallbackEmbedUrl = "" }: { item: VaultItem; src: string; poster?: string; fallbackEmbedUrl?: string }) {
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const videoRef = useRef<IOSVideoElement | null>(null);
+  const pictureTimerRef = useRef<number | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [compatibilityMode, setCompatibilityMode] = useState(false);
+  const [appFullscreen, setAppFullscreen] = useState(false);
+
+  useEffect(() => () => {
+    if (pictureTimerRef.current !== null) window.clearTimeout(pictureTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    const syncFullscreen = () => {
+      if (!document.fullscreenElement) setAppFullscreen(false);
+    };
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
+
+  function switchToCompatibilityMode() {
+    if (!fallbackEmbedUrl) {
+      setFailed(true);
+      return;
+    }
+    if (pictureTimerRef.current !== null) window.clearTimeout(pictureTimerRef.current);
+    setCompatibilityMode(true);
+    setPlaying(false);
+  }
+
+  function verifyPicture(video: HTMLVideoElement) {
+    if (!fallbackEmbedUrl || video.videoWidth > 0 || video.videoHeight > 0) return;
+    if (pictureTimerRef.current !== null) window.clearTimeout(pictureTimerRef.current);
+    pictureTimerRef.current = window.setTimeout(() => {
+      const current = videoRef.current;
+      if (current && current.videoWidth === 0 && current.videoHeight === 0) switchToCompatibilityMode();
+    }, 1200);
+  }
+
+  async function togglePlayback() {
+    const video = videoRef.current;
+    if (!video) return;
+    try {
+      if (video.paused) await video.play();
+      else video.pause();
+    } catch {
+      switchToCompatibilityMode();
+    }
+  }
+
+  async function toggleFullscreen() {
+    const stage = stageRef.current;
+    const video = videoRef.current;
+
+    if (appFullscreen) {
+      setAppFullscreen(false);
+      return;
+    }
+    if (document.fullscreenElement) {
+      try { await document.exitFullscreen(); } catch {}
+      return;
+    }
+
+    // iPhone/iOS Safari does not reliably support Element.requestFullscreen().
+    // Native video fullscreen is the most stable path there.
+    if (video?.webkitEnterFullscreen && /iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+      try { video.webkitEnterFullscreen(); return; } catch {}
+    }
+
+    if (stage?.requestFullscreen) {
+      try { await stage.requestFullscreen(); return; } catch {}
+    }
+    if (video?.webkitEnterFullscreen) {
+      try { video.webkitEnterFullscreen(); return; } catch {}
+    }
+    setAppFullscreen(true);
+  }
+
+  if (compatibilityMode && fallbackEmbedUrl) {
+    return <div className="media-compatibility-wrap">
+      <div className="media-compatibility-label">Chế độ tương thích Google Drive</div>
+      <div className="media-viewer-shell video-shell drive-preview-shell compatibility-player">
+        <iframe
+          src={fallbackEmbedUrl}
+          title={`Xem video ${item.name}`}
+          loading="eager"
+          allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+          allowFullScreen
+        />
+      </div>
+      <div className="media-compatibility-note">DriveVault chỉ chuyển sang player Google Drive khi trình duyệt không giải mã được video gốc.</div>
+    </div>;
+  }
+
+  return <div className={`media-viewer-shell video-shell dv-video-player ${appFullscreen ? "app-fullscreen" : ""}`} ref={stageRef}>
+    <video
+      ref={videoRef}
+      className="inapp-video dv-video-element"
+      playsInline
+      preload="metadata"
+      poster={poster}
+      src={src}
+      onClick={() => void togglePlayback()}
+      onLoadedMetadata={(e) => {
+        const video = e.currentTarget;
+        setDuration(Number.isFinite(video.duration) ? video.duration : 0);
+        const saved = readMediaProgress(item.id);
+        if (saved > 2 && saved < Math.max(0, video.duration - 5)) {
+          try { video.currentTime = saved; } catch {}
+        }
+      }}
+      onLoadedData={(e) => {
+        setReady(true);
+        verifyPicture(e.currentTarget);
+      }}
+      onCanPlay={(e) => {
+        setReady(true);
+        verifyPicture(e.currentTarget);
+      }}
+      onPlaying={(e) => {
+        setPlaying(true);
+        verifyPicture(e.currentTarget);
+        window.dispatchEvent(new Event("drivevault-activity"));
+      }}
+      onPause={() => setPlaying(false)}
+      onTimeUpdate={(e) => {
+        const value = e.currentTarget.currentTime;
+        setCurrentTime(value);
+        writeMediaProgress(item.id, value);
+        window.dispatchEvent(new Event("drivevault-activity"));
+      }}
+      onEnded={() => {
+        setPlaying(false);
+        setCurrentTime(0);
+        writeMediaProgress(item.id, 0);
+      }}
+      onError={() => switchToCompatibilityMode()}
+    />
+
+    {!ready && !failed && <div className="dv-video-loading"><Loader2 size={22} className="spin"/><span>Đang chuẩn bị video…</span></div>}
+    {failed && <div className="media-player-error">Không phát được video. Hãy kiểm tra quyền chia sẻ Google Drive hoặc định dạng file.</div>}
+
+    <div className="dv-video-controls" onClick={(e) => e.stopPropagation()}>
+      <button className="dv-video-play" onClick={() => void togglePlayback()} aria-label={playing ? "Tạm dừng" : "Phát video"}>
+        {playing ? <Pause size={18} fill="currentColor"/> : <Play size={18} fill="currentColor"/>}
+      </button>
+      <input
+        className="dv-video-progress"
+        type="range"
+        min={0}
+        max={Math.max(duration, 0.01)}
+        step="0.1"
+        value={Math.min(currentTime, Math.max(duration, 0.01))}
+        onChange={(e) => {
+          const value = Number(e.target.value);
+          setCurrentTime(value);
+          if (videoRef.current) videoRef.current.currentTime = value;
+        }}
+        aria-label="Tiến trình video"
+      />
+      <span className="dv-video-time">{formatMediaTime(currentTime)} / {formatMediaTime(duration)}</span>
+      <button className="dv-video-fullscreen" onClick={() => void toggleFullscreen()} aria-label="Xem video toàn màn hình">
+        <Maximize2 size={18}/>
+      </button>
+    </div>
+  </div>;
+}
+
 function MediaDetailPreview({ item }: { item: VaultItem }) {
   const intel = analyzeLink(item.url);
   const [driveImageFailed, setDriveImageFailed] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
   const [appFullscreen, setAppFullscreen] = useState(false);
   const stageRef = useRef<HTMLDivElement | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
   const resolvedKind = (typeof window !== "undefined" ? readMediaKindCache()[item.id] : undefined) || inferMediaKind(item);
   if (!item.url) return null;
 
-  async function toggleFullscreen(preferNativeVideo = false) {
-    const video = videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
-    if (preferNativeVideo && !document.fullscreenElement && video?.webkitEnterFullscreen) {
-      try { video.webkitEnterFullscreen(); return; } catch {}
+  async function toggleImageFullscreen() {
+    if (appFullscreen) {
+      setAppFullscreen(false);
+      return;
     }
     if (document.fullscreenElement) {
-      try { await document.exitFullscreen(); return; } catch {}
+      try { await document.exitFullscreen(); } catch {}
+      return;
     }
-    if (!appFullscreen && stageRef.current?.requestFullscreen) {
+    if (stageRef.current?.requestFullscreen) {
       try { await stageRef.current.requestFullscreen(); return; } catch {}
     }
-    setAppFullscreen((value) => !value);
+    setAppFullscreen(true);
   }
 
   const shellClass = `media-viewer-shell ${appFullscreen ? "app-fullscreen" : ""}`;
-  const fullButton = (preferNativeVideo = false) => <button className="media-fullscreen" onClick={() => void toggleFullscreen(preferNativeVideo)} aria-label={appFullscreen ? "Thoát toàn màn hình" : "Xem toàn màn hình"}><Maximize2 size={17}/></button>;
+  const imageFullButton = <button className="media-fullscreen" onClick={() => void toggleImageFullscreen()} aria-label={appFullscreen ? "Thoát toàn màn hình" : "Xem toàn màn hình"}><Maximize2 size={17}/></button>;
 
   if (intel.kind === "direct-image") {
     return <div className={shellClass} ref={stageRef}>
-      {fullButton()}
+      {imageFullButton}
       <img className="inapp-image" src={intel.thumbnailUrl} alt={item.name} onError={() => setImageFailed(true)} />
       {imageFailed && <div className="media-player-error">Không tải được ảnh. Hãy kiểm tra quyền truy cập link.</div>}
     </div>;
@@ -641,47 +827,31 @@ function MediaDetailPreview({ item }: { item: VaultItem }) {
 
   if (intel.kind === "drive-file" && intel.streamUrl && resolvedKind === "image" && !driveImageFailed) {
     return <div className={shellClass} ref={stageRef}>
-      {fullButton()}
+      {imageFullButton}
       <img className="inapp-image" src={intel.streamUrl} alt={item.name} onError={() => setDriveImageFailed(true)} />
     </div>;
   }
 
-  // Google Drive video: ưu tiên Drive Preview thay vì raw download. Drive sẽ tự transcode
-  // các codec mà Safari/iPhone hoặc Chromium không giải mã được (trường hợp chỉ nghe tiếng nhưng không có hình).
-  if (intel.kind === "drive-file" && intel.embedUrl && resolvedKind !== "image") {
-    return <div className={`${shellClass} video-shell drive-preview-shell`} ref={stageRef}>
-      {fullButton()}
-      <iframe
-        src={intel.embedUrl}
-        title={`Xem video ${item.name}`}
-        loading="eager"
-        allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-        allowFullScreen
-      />
-      <div className="media-player-note">Video Drive được phát trực tiếp trong DriveVault. Nếu file vừa tải lên, Google Drive có thể cần một lúc để xử lý video.</div>
-    </div>;
+  // V2.2.0 Media Fix 1: khôi phục HTML5 player làm player chính như các bản cũ.
+  // Google Drive Preview chỉ là fallback khi browser thật sự không giải mã được track video.
+  // Nhờ vậy không còn 2 nút fullscreen chồng nhau và control luôn thao tác được trên iPhone.
+  if (intel.kind === "drive-file" && intel.streamUrl && resolvedKind !== "image") {
+    return <InAppVideoPlayer item={item} src={intel.streamUrl} poster={item.thumbnail || intel.thumbnailUrl} fallbackEmbedUrl={intel.embedUrl || ""}/>;
   }
 
   if (intel.kind === "direct-video" && intel.streamUrl) {
-    return <div className={`${shellClass} video-shell`} ref={stageRef}>
-      {fullButton(true)}
-      <video ref={videoRef} className="inapp-video" controls playsInline preload="metadata" poster={item.thumbnail || intel.thumbnailUrl} src={intel.streamUrl}
-        onLoadedMetadata={(e) => { const saved = readMediaProgress(item.id); if (saved > 2 && saved < Math.max(0, e.currentTarget.duration - 5)) e.currentTarget.currentTime = saved; }}
-        onTimeUpdate={(e) => { writeMediaProgress(item.id, e.currentTarget.currentTime); window.dispatchEvent(new Event("drivevault-activity")); }}
-        onEnded={() => writeMediaProgress(item.id, 0)} />
-    </div>;
+    return <InAppVideoPlayer item={item} src={intel.streamUrl} poster={item.thumbnail || intel.thumbnailUrl}/>;
   }
 
   if (intel.embedUrl) {
-    return <div className={`${shellClass} video-shell`} ref={stageRef}>
-      {fullButton()}
+    return <div className="media-viewer-shell video-shell drive-preview-shell compatibility-player">
       <iframe src={intel.embedUrl} title={`Xem ${item.name}`} loading="eager" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen />
     </div>;
   }
 
   if (intel.thumbnailUrl && !imageFailed) {
     return <div className={shellClass} ref={stageRef}>
-      {fullButton()}
+      {imageFullButton}
       <img className="inapp-image" src={item.thumbnail || intel.thumbnailUrl} alt={item.name} onError={() => setImageFailed(true)} />
     </div>;
   }
