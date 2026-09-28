@@ -718,3 +718,76 @@ form input:focus, form textarea:focus, form select:focus { border-color:color-mi
   .dv-video-controls button { width:36px; height:36px; }
   .dv-video-time { min-width:68px; font-size:8px; }
 }
+
+
+/* V2.2.0 Media Player Fix 2 – compact Google Drive controls on small screens + reliable fullscreen */
+.drive-compat-stage {
+  --dv-drive-scale:.84;
+  position:relative;
+  overflow:hidden !important;
+  background:#000;
+  isolation:isolate;
+}
+.drive-compat-viewport { position:absolute; inset:0; overflow:hidden; background:#000; }
+.drive-compat-iframe {
+  position:absolute;
+  top:0;
+  left:0;
+  width:calc(100% / var(--dv-drive-scale)) !important;
+  height:calc(100% / var(--dv-drive-scale)) !important;
+  min-height:0 !important;
+  border:0;
+  transform:scale(var(--dv-drive-scale));
+  transform-origin:top left;
+  background:#000;
+}
+.drive-compat-fullscreen {
+  position:absolute;
+  z-index:40;
+  top:9px;
+  right:9px;
+  width:44px;
+  height:44px;
+  display:grid;
+  place-items:center;
+  border:1px solid rgba(255,255,255,.22);
+  border-radius:13px;
+  background:rgba(6,9,15,.96);
+  color:#fff;
+  box-shadow:0 6px 20px rgba(0,0,0,.38);
+  -webkit-backdrop-filter:blur(10px);
+  backdrop-filter:blur(10px);
+  cursor:pointer;
+  pointer-events:auto;
+  touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;
+}
+.drive-compat-fullscreen:active { transform:scale(.96); }
+.drive-compat-stage:fullscreen,
+.drive-compat-stage.app-fullscreen { --dv-drive-scale:1; }
+.drive-compat-stage:fullscreen .drive-compat-fullscreen,
+.drive-compat-stage.app-fullscreen .drive-compat-fullscreen {
+  top:max(12px,env(safe-area-inset-top));
+  right:max(12px,env(safe-area-inset-right));
+  width:46px;
+  height:46px;
+}
+.drive-compat-stage:fullscreen .drive-compat-viewport,
+.drive-compat-stage.app-fullscreen .drive-compat-viewport { inset:0; }
+.drive-compat-stage:fullscreen .drive-compat-iframe,
+.drive-compat-stage.app-fullscreen .drive-compat-iframe {
+  width:100% !important;
+  height:100% !important;
+  transform:none !important;
+}
+
+@media (max-width:560px) {
+  .drive-compat-stage { --dv-drive-scale:.72; min-height:230px; }
+  .drive-compat-fullscreen { width:42px; height:42px; top:8px; right:8px; border-radius:12px; }
+  .drive-compat-stage:fullscreen,
+  .drive-compat-stage.app-fullscreen { --dv-drive-scale:1; min-height:100dvh; }
+}
+
+@media (max-width:390px) {
+  .drive-compat-stage { --dv-drive-scale:.68; min-height:220px; }
+}

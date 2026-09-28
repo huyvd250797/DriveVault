@@ -45,6 +45,7 @@ import {
   Unlock,
   ShieldCheck,
   Maximize2,
+  Minimize2,
   ImagePlus,
   KeyRound,
   Eye,
@@ -618,6 +619,85 @@ type IOSVideoElement = HTMLVideoElement & {
   webkitDisplayingFullscreen?: boolean;
 };
 
+type WebkitFullscreenElement = HTMLElement & {
+  webkitRequestFullscreen?: () => void;
+};
+
+function DriveCompatibilityPlayer({ item, embedUrl }: { item: VaultItem; embedUrl: string }) {
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [appFullscreen, setAppFullscreen] = useState(false);
+
+  useEffect(() => {
+    const syncFullscreen = () => {
+      const stage = stageRef.current;
+      const active = document.fullscreenElement;
+      if (active && stage && (active === stage || stage.contains(active))) setAppFullscreen(true);
+      else setAppFullscreen(false);
+    };
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
+
+  async function toggleFullscreen() {
+    const stage = stageRef.current;
+    if (!stage) return;
+
+    if (document.fullscreenElement) {
+      try { await document.exitFullscreen(); } catch {}
+      setAppFullscreen(false);
+      return;
+    }
+
+    if (appFullscreen) {
+      setAppFullscreen(false);
+      return;
+    }
+
+    if (stage.requestFullscreen) {
+      try {
+        await stage.requestFullscreen();
+        setAppFullscreen(true);
+        return;
+      } catch {}
+    }
+
+    const webkitStage = stage as WebkitFullscreenElement;
+    if (webkitStage.webkitRequestFullscreen) {
+      try {
+        webkitStage.webkitRequestFullscreen();
+        setAppFullscreen(true);
+        return;
+      } catch {}
+    }
+
+    // iPhone/PWA fallback: cover the whole visual viewport when Element Fullscreen is unavailable.
+    setAppFullscreen(true);
+  }
+
+  return <div
+    className={`media-viewer-shell video-shell drive-preview-shell compatibility-player drive-compat-stage ${appFullscreen ? "app-fullscreen" : ""}`}
+    ref={stageRef}
+  >
+    <div className="drive-compat-viewport">
+      <iframe
+        className="drive-compat-iframe"
+        src={embedUrl}
+        title={`Xem video ${item.name}`}
+        loading="eager"
+        allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+        allowFullScreen
+      />
+    </div>
+    <button
+      className="drive-compat-fullscreen"
+      onClick={(event) => { event.preventDefault(); event.stopPropagation(); void toggleFullscreen(); }}
+      aria-label={appFullscreen ? "Thoát toàn màn hình" : "Xem video toàn màn hình"}
+    >
+      {appFullscreen ? <Minimize2 size={19}/> : <Maximize2 size={19}/>}
+    </button>
+  </div>;
+}
+
 function InAppVideoPlayer({ item, src, poster, fallbackEmbedUrl = "" }: { item: VaultItem; src: string; poster?: string; fallbackEmbedUrl?: string }) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<IOSVideoElement | null>(null);
@@ -703,16 +783,8 @@ function InAppVideoPlayer({ item, src, poster, fallbackEmbedUrl = "" }: { item: 
   if (compatibilityMode && fallbackEmbedUrl) {
     return <div className="media-compatibility-wrap">
       <div className="media-compatibility-label">Chế độ tương thích Google Drive</div>
-      <div className="media-viewer-shell video-shell drive-preview-shell compatibility-player">
-        <iframe
-          src={fallbackEmbedUrl}
-          title={`Xem video ${item.name}`}
-          loading="eager"
-          allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-          allowFullScreen
-        />
-      </div>
-      <div className="media-compatibility-note">DriveVault chỉ chuyển sang player Google Drive khi trình duyệt không giải mã được video gốc.</div>
+      <DriveCompatibilityPlayer item={item} embedUrl={fallbackEmbedUrl}/>
+      <div className="media-compatibility-note">Player Drive được thu gọn control để vừa màn hình nhỏ. Nút toàn màn hình của DriveVault luôn nằm trên cùng và không bị progress che.</div>
     </div>;
   }
 
@@ -844,6 +916,7 @@ function MediaDetailPreview({ item }: { item: VaultItem }) {
   }
 
   if (intel.embedUrl) {
+    if (intel.kind === "drive-file") return <DriveCompatibilityPlayer item={item} embedUrl={intel.embedUrl}/>;
     return <div className="media-viewer-shell video-shell drive-preview-shell compatibility-player">
       <iframe src={intel.embedUrl} title={`Xem ${item.name}`} loading="eager" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen />
     </div>;

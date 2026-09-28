@@ -107,3 +107,10 @@ DRIVEVAULT_API_KEY=...
 - audit thay đổi;
 - snapshot trước bulk action lớn;
 - lịch sử khôi phục/xóa để giảm rủi ro mất dữ liệu.
+
+
+## Media Player Fix 2
+- Thu nhỏ toàn bộ Google Drive Preview viewport trên mobile để các control (progress/quality/subtitle/fullscreen) không bị phóng và đè nhau.
+- Chỉ hiển thị một nút fullscreen của DriveVault ở góc phải; nút này phủ lên vùng fullscreen của player Drive để luôn nhận touch.
+- Fullscreen ưu tiên Fullscreen API; trên iPhone/PWA không hỗ trợ thì fallback sang overlay 100vw × 100dvh.
+- Khi fullscreen, iframe trở về scale 1 để tận dụng toàn bộ màn hình.
