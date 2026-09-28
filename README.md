@@ -44,19 +44,18 @@ V2.1.0 nâng DriveVault từ kho lưu trữ cá nhân thành **thư viện media
 - Có thể chọn trực tiếp từng tile trong Gallery Grid.
 - Bulk pin / unpin / archive / move classification / delete tiếp tục dùng Offline Queue hiện tại.
 
-### 7. Fix iPhone Safe Area – Search & Filter
-V2.0 có `toolbar` sticky ở `top: 0`, nên khi scroll trên iPhone/PWA thanh tìm kiếm và nút Bộ lọc có thể chui vào vùng:
-- giờ;
-- Dynamic Island / notch;
-- icon sóng / Wi-Fi / pin.
-
-V2.1.0 thay sticky offset bằng:
+### 7. Fix iPhone Safe Area – Search & Filter (Deploy Fix 2)
+- **Khôi phục đầy đủ Header** ở đầu trang: logo/tên DriveVault, App Lock, Data/Backup, Dark/Light và Reload/Sync.
+- Header là nội dung bình thường của trang, **không sticky** và không bị thanh tìm kiếm che.
+- Chỉ riêng **Tìm kiếm + nút Bộ lọc** mới sticky khi người dùng bắt đầu scroll xuống.
+- Khi sticky trên iPhone/PWA, thanh này tự hạ xuống dưới `safe-area-inset-top`, tránh vùng giờ / Dynamic Island / sóng / Wi‑Fi / pin.
+- Bộ lọc loại lưu trữ và toolbar Media tiếp tục scroll theo nội dung, không chiếm vùng header cố định.
 
 ```css
---dv-sticky-safe-top: max(12px, env(safe-area-inset-top));
+--dv-sticky-safe-top: max(8px, env(safe-area-inset-top));
 ```
 
-Thanh tìm kiếm/bộ lọc luôn nằm **bên dưới safe-area của iPhone**, đồng thời có lớp nền che nội dung phía sau khi sticky.
+Cơ chế safe-area chỉ được kích hoạt khi đang scroll, nên lúc ở đầu trang bố cục Header vẫn hiển thị đúng như V2.0.
 
 ## Database / Google Apps Script
 

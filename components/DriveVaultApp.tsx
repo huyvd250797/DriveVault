@@ -887,6 +887,7 @@ export default function DriveVaultApp() {
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [floatingActive, setFloatingActive] = useState(false);
   const [showScrollTop, setShowScrollTop] = useState(false);
+  const [searchStickyActive, setSearchStickyActive] = useState(false);
   const [online, setOnline] = useState(true);
   const [pendingCount, setPendingCount] = useState(0);
   const [undoDelete, setUndoDelete] = useState<UndoDeleteState | null>(null);
@@ -1364,6 +1365,7 @@ export default function DriveVaultApp() {
   useEffect(() => {
     const onScroll = () => {
       setShowScrollTop(window.scrollY > 180);
+      setSearchStickyActive(window.scrollY > 28);
       setFloatingActive(true);
       if (scrollIdleTimer.current) clearTimeout(scrollIdleTimer.current);
       scrollIdleTimer.current = window.setTimeout(() => setFloatingActive(false), 500);
@@ -1957,7 +1959,7 @@ export default function DriveVaultApp() {
         {pendingCount > 0 && online && <button onClick={() => retrySync()}>Đồng bộ ngay</button>}
       </div>
 
-      <section className="toolbar compact-toolbar">
+      <div className={`search-sticky-bar ${searchStickyActive ? "is-scrolled" : ""}`}>
         <div className="search-row">
           <label className="searchbox"><Search size={18} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder='Tìm kiếm... dùng "cụm từ" để khớp chính xác' /></label>
           <button className={`filter-toggle ${activeFilterCount ? "active" : ""}`} onClick={() => setAdvancedOpen(true)} aria-label="Mở bộ lọc">
@@ -1965,7 +1967,9 @@ export default function DriveVaultApp() {
             {activeFilterCount > 0 && <span className="filter-count">{activeFilterCount}</span>}
           </button>
         </div>
+      </div>
 
+      <section className="toolbar compact-toolbar toolbar-static">
         <div className="chips storage-type-chips" role="tablist" aria-label="Lọc loại lưu trữ">
           {(["all", "media", "content", "other"] as const).map((key) => <button key={key} className={`chip ${typeFilter === key ? "active" : ""}`} onClick={() => { setTypeFilter(key); if (key !== "media") setMediaKindFilter("all"); }}>{key === "all" ? "Tất cả loại" : typeMeta[key].label}</button>)}
         </div>
